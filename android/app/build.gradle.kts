@@ -6,7 +6,9 @@ plugins {
 
 android {
     namespace = "com.scribbledangelstudio.scribbled_angel_studio"
-    compileSdk = flutter.compileSdkVersion
+    // flutter.compileSdkVersion lags behind what some plugins now require
+    // (flutter_plugin_android_lifecycle needs 36+), so pin it explicitly.
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

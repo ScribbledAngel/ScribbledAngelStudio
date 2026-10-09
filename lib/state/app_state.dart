@@ -227,4 +227,74 @@ class AppState extends ChangeNotifier {
     shot.frames[index].strokes = strokes;
     await _commit();
   }
+
+  // ---- Storyboard ----
+
+  Future<void> updateStoryboardStrokes(
+    String projectId,
+    String episodeId,
+    String shotId,
+    List<Stroke> strokes,
+  ) async {
+    final shot = getShot(projectId, episodeId, shotId);
+    if (shot == null) return;
+    shot.storyboardFrame.strokes = strokes;
+    await _commit();
+  }
+
+  // ---- Camera ----
+
+  Future<void> updateShotCamera(
+    String projectId,
+    String episodeId,
+    String shotId, {
+    bool? enabled,
+    CameraState? start,
+    CameraState? end,
+  }) async {
+    final shot = getShot(projectId, episodeId, shotId);
+    if (shot == null) return;
+    if (enabled != null) shot.cameraMoveEnabled = enabled;
+    if (start != null) shot.cameraStart = start;
+    if (end != null) shot.cameraEnd = end;
+    await _commit();
+  }
+
+  // ---- Audio ----
+
+  Future<void> setShotAudio(
+    String projectId,
+    String episodeId,
+    String shotId,
+    AudioClip clip,
+  ) async {
+    final shot = getShot(projectId, episodeId, shotId);
+    if (shot == null) return;
+    shot.audioClip = clip;
+    await _commit();
+  }
+
+  Future<void> updateShotAudio(
+    String projectId,
+    String episodeId,
+    String shotId, {
+    double? trimStart,
+    double? trimEnd,
+    double? volume,
+  }) async {
+    final shot = getShot(projectId, episodeId, shotId);
+    final clip = shot?.audioClip;
+    if (clip == null) return;
+    if (trimStart != null) clip.trimStart = trimStart;
+    if (trimEnd != null) clip.trimEnd = trimEnd;
+    if (volume != null) clip.volume = volume;
+    await _commit();
+  }
+
+  Future<void> clearShotAudio(String projectId, String episodeId, String shotId) async {
+    final shot = getShot(projectId, episodeId, shotId);
+    if (shot == null) return;
+    shot.audioClip = null;
+    await _commit();
+  }
 }

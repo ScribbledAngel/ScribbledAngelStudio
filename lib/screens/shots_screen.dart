@@ -7,6 +7,7 @@ import '../theme/app_theme.dart';
 import '../widgets/frame_preview.dart';
 import '../widgets/prompt_dialog.dart';
 import 'shot_editor_screen.dart';
+import 'storyboard_screen.dart';
 
 class ShotsScreen extends StatelessWidget {
   final String projectId;
@@ -59,7 +60,20 @@ class ShotsScreen extends StatelessWidget {
     }
 
     return Scaffold(
-      appBar: AppBar(title: Text(episode.title)),
+      appBar: AppBar(
+        title: Text(episode.title),
+        actions: [
+          IconButton(
+            tooltip: 'Storyboard',
+            icon: const Icon(Icons.grid_view_rounded),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => StoryboardScreen(projectId: projectId, episodeId: episodeId),
+              ),
+            ),
+          ),
+        ],
+      ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _createShot(context),
         icon: const Icon(Icons.add_rounded),

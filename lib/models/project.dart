@@ -1,11 +1,12 @@
 import 'episode.dart';
-import 'shot.dart';
 
 // Re-exported so screens only need one import for the whole model graph.
 export 'episode.dart';
 export 'shot.dart';
 export 'frame.dart';
 export 'stroke.dart';
+export 'camera_state.dart';
+export 'audio_clip.dart';
 
 class Project {
   String id;

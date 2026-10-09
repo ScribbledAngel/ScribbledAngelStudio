@@ -1,3 +1,5 @@
+import 'audio_clip.dart';
+import 'camera_state.dart';
 import 'frame.dart';
 
 enum ShotStatus { notStarted, inProgress, complete }
@@ -55,6 +57,16 @@ class Shot {
   ShotStatus status;
   CanvasOrientation orientation;
 
+  /// A separate, simple sketch used for the storyboard overview - not part
+  /// of the animated frames themselves.
+  AnimFrame storyboardFrame;
+
+  bool cameraMoveEnabled;
+  CameraState cameraStart;
+  CameraState cameraEnd;
+
+  AudioClip? audioClip;
+
   Shot({
     required this.id,
     required this.name,
@@ -63,7 +75,15 @@ class Shot {
     List<AnimFrame>? frames,
     this.status = ShotStatus.notStarted,
     this.orientation = CanvasOrientation.landscape,
-  }) : frames = frames ?? [];
+    AnimFrame? storyboardFrame,
+    this.cameraMoveEnabled = false,
+    CameraState? cameraStart,
+    CameraState? cameraEnd,
+    this.audioClip,
+  })  : frames = frames ?? [],
+        storyboardFrame = storyboardFrame ?? AnimFrame(id: '$id-storyboard'),
+        cameraStart = cameraStart ?? CameraState(),
+        cameraEnd = cameraEnd ?? CameraState();
 
   double get durationSeconds => fps > 0 ? frames.length / fps : 0;
 
@@ -75,6 +95,11 @@ class Shot {
         'frames': frames.map((f) => f.toJson()).toList(),
         'status': status.name,
         'orientation': orientation.name,
+        'storyboardFrame': storyboardFrame.toJson(),
+        'cameraMoveEnabled': cameraMoveEnabled,
+        'cameraStart': cameraStart.toJson(),
+        'cameraEnd': cameraEnd.toJson(),
+        'audioClip': audioClip?.toJson(),
       };
 
   static Shot fromJson(Map<String, dynamic> json) => Shot(
@@ -93,5 +118,18 @@ class Shot {
           (o) => o.name == json['orientation'],
           orElse: () => CanvasOrientation.landscape,
         ),
+        storyboardFrame: json['storyboardFrame'] != null
+            ? AnimFrame.fromJson(json['storyboardFrame'] as Map<String, dynamic>)
+            : null,
+        cameraMoveEnabled: json['cameraMoveEnabled'] as bool? ?? false,
+        cameraStart: json['cameraStart'] != null
+            ? CameraState.fromJson(json['cameraStart'] as Map<String, dynamic>)
+            : null,
+        cameraEnd: json['cameraEnd'] != null
+            ? CameraState.fromJson(json['cameraEnd'] as Map<String, dynamic>)
+            : null,
+        audioClip: json['audioClip'] != null
+            ? AudioClip.fromJson(json['audioClip'] as Map<String, dynamic>)
+            : null,
       );
 }

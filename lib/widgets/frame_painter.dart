@@ -7,8 +7,13 @@ import '../models/stroke.dart';
 class FramePainter extends CustomPainter {
   final List<Stroke> strokes;
   final double opacity;
+  /// When set, every non-eraser stroke is painted as a flat silhouette in
+  /// this color instead of its real color - used for onion-skin layers so
+  /// the "ghost" frames read clearly as before/after, not as a confusing
+  /// extra set of full-color lines.
+  final Color? tintColor;
 
-  FramePainter({required this.strokes, this.opacity = 1.0});
+  FramePainter({required this.strokes, this.opacity = 1.0, this.tintColor});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -25,7 +30,9 @@ class FramePainter extends CustomPainter {
         ..blendMode = stroke.isEraser ? BlendMode.clear : BlendMode.srcOver
         ..color = stroke.isEraser
             ? Colors.black
-            : (opacity >= 1.0 ? stroke.color : stroke.color.withOpacity(opacity));
+            : (tintColor != null
+                ? tintColor!.withOpacity(opacity)
+                : (opacity >= 1.0 ? stroke.color : stroke.color.withOpacity(opacity)));
 
       if (stroke.points.length == 1) {
         canvas.drawCircle(stroke.points.first, stroke.width / 2, paint..style = PaintingStyle.fill);

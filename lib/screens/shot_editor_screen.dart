@@ -1,15 +1,22 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
 
+import '../data/audio_service.dart';
+import '../models/audio_clip.dart';
+import '../models/camera_state.dart';
+import '../models/frame.dart';
 import '../models/shot.dart';
 import '../models/stroke.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import '../widgets/drawing_canvas.dart';
+import '../widgets/frame_painter.dart';
 import '../widgets/prompt_dialog.dart';
 import '../widgets/timeline_strip.dart';
+import 'camera_editor_screen.dart';
 
 const _palette = <Color>[
   Colors.black,
@@ -51,8 +58,15 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
   bool _isPlaying = false;
   Timer? _playbackTimer;
 
+  bool _onionSkinEnabled = false;
+  double _onionOpacity = 0.3;
+
   final List<List<Stroke>> _undoStack = [];
   final List<List<Stroke>> _redoStack = [];
+
+  final AudioService _audioService = AudioService();
+  final AudioPlayer _audioPlayer = AudioPlayer();
+  bool _isRecording = false;
 
   AppState get _appState => context.read<AppState>();
 
@@ -71,6 +85,7 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
   @override
   void dispose() {
     _playbackTimer?.cancel();
+    _audioPlayer.dispose();
     super.dispose();
   }
 
@@ -82,10 +97,25 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
     }
   }
 
+  DateTime? _playbackStartTime;
+
   void _stopPlayback() {
     _playbackTimer?.cancel();
     _playbackTimer = null;
+    _playbackStartTime = null;
+    _audioPlayer.stop();
     if (_isPlaying) setState(() => _isPlaying = false);
+  }
+
+  Future<void> _playAudioFromStart(AudioClip clip) async {
+    try {
+      await _audioPlayer.setFilePath(await _audioService.fullPathFor(clip.fileName));
+      await _audioPlayer.setVolume(clip.volume);
+      await _audioPlayer.seek(Duration(milliseconds: (clip.trimStart * 1000).round()));
+      await _audioPlayer.play();
+    } catch (_) {
+      // Missing/corrupt audio file shouldn't block frame playback.
+    }
   }
 
   void _togglePlayback(Shot shot) {
@@ -95,13 +125,26 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
     }
     if (shot.frames.length < 2) return;
     setState(() => _isPlaying = true);
-    final frameMs = (1000 / shot.fps).round();
-    _playbackTimer = Timer.periodic(Duration(milliseconds: frameMs), (_) {
+    final clip = shot.audioClip;
+    if (clip != null) _playAudioFromStart(clip);
+    final frameMs = 1000 / shot.fps;
+    _playbackStartTime = DateTime.now();
+    // Poll frequently and derive the frame from real elapsed time, rather
+    // than just advancing by one tick each time - a plain periodic counter
+    // drifts out of sync with audio (which tracks a real clock) over a few
+    // seconds, since each Timer tick is scheduled independently.
+    _playbackTimer = Timer.periodic(const Duration(milliseconds: 16), (_) {
       final current = _shot;
-      if (current == null || current.frames.isEmpty) return;
-      setState(() {
-        _currentFrameIndex = (_currentFrameIndex + 1) % current.frames.length;
-      });
+      final startTime = _playbackStartTime;
+      if (current == null || current.frames.isEmpty || startTime == null) return;
+      final elapsedMs = DateTime.now().difference(startTime).inMilliseconds;
+      final totalFrames = current.frames.length;
+      final loopedIndex = (elapsedMs / frameMs).floor() % totalFrames;
+      if (loopedIndex == _currentFrameIndex) return;
+      if (loopedIndex < _currentFrameIndex && current.audioClip != null) {
+        _playAudioFromStart(current.audioClip!);
+      }
+      setState(() => _currentFrameIndex = loopedIndex);
     });
   }
 
@@ -272,6 +315,184 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
     );
   }
 
+  Future<void> _startRecording() async {
+    final granted = await _audioService.requestPermission();
+    if (!granted) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Microphone permission is needed to record audio.')),
+        );
+      }
+      return;
+    }
+    final started = await _audioService.startRecording();
+    if (started && mounted) setState(() => _isRecording = true);
+  }
+
+  Future<void> _stopRecording() async {
+    final clip = await _audioService.stopRecording();
+    if (mounted) setState(() => _isRecording = false);
+    if (clip != null) {
+      await _appState.setShotAudio(widget.projectId, widget.episodeId, widget.shotId, clip);
+    }
+  }
+
+  Future<void> _importAudio() async {
+    final clip = await _audioService.importAudioFile();
+    if (clip != null) {
+      await _appState.setShotAudio(widget.projectId, widget.episodeId, widget.shotId, clip);
+    }
+  }
+
+  Future<void> _deleteAudio(AudioClip clip) async {
+    await _audioPlayer.stop();
+    await _audioService.deleteFile(clip.fileName);
+    await _appState.clearShotAudio(widget.projectId, widget.episodeId, widget.shotId);
+  }
+
+  void _openAudioPanel() {
+    _stopPlayback();
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (sheetContext, setSheetState) {
+          final shot = context.watch<AppState>().getShot(widget.projectId, widget.episodeId, widget.shotId);
+          if (shot == null) return const SizedBox.shrink();
+          final clip = shot.audioClip;
+          return SafeArea(
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(20, 20, 20, 20 + MediaQuery.of(sheetContext).viewInsets.bottom),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Shot audio', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  const SizedBox(height: 16),
+                  if (clip == null)
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            icon: Icon(_isRecording ? Icons.stop_circle_rounded : Icons.mic_rounded),
+                            label: Text(_isRecording ? 'Stop recording' : 'Record'),
+                            onPressed: () async {
+                              if (_isRecording) {
+                                await _stopRecording();
+                              } else {
+                                await _startRecording();
+                              }
+                              setSheetState(() {});
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            icon: const Icon(Icons.file_upload_outlined),
+                            label: const Text('Import'),
+                            onPressed: _isRecording
+                                ? null
+                                : () async {
+                                    await _importAudio();
+                                    setSheetState(() {});
+                                  },
+                          ),
+                        ),
+                      ],
+                    )
+                  else ...[
+                    Text(
+                      '${clip.sourceDurationSeconds.toStringAsFixed(1)}s source · '
+                      '${clip.effectiveDuration.toStringAsFixed(1)}s used',
+                      style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
+                    ),
+                    const SizedBox(height: 4),
+                    const Text('Trim', style: TextStyle(fontSize: 12)),
+                    RangeSlider(
+                      min: 0,
+                      max: clip.sourceDurationSeconds > 0 ? clip.sourceDurationSeconds : 1,
+                      values: RangeValues(
+                        clip.trimStart.clamp(0, clip.sourceDurationSeconds).toDouble(),
+                        clip.trimEnd.clamp(0, clip.sourceDurationSeconds).toDouble(),
+                      ),
+                      onChanged: (values) {
+                        clip.trimStart = values.start;
+                        clip.trimEnd = values.end;
+                        setSheetState(() {});
+                        _appState.updateShotAudio(
+                          widget.projectId,
+                          widget.episodeId,
+                          widget.shotId,
+                          trimStart: values.start,
+                          trimEnd: values.end,
+                        );
+                      },
+                    ),
+                    const Text('Volume', style: TextStyle(fontSize: 12)),
+                    Slider(
+                      min: 0,
+                      max: 1,
+                      value: clip.volume,
+                      onChanged: (value) {
+                        clip.volume = value;
+                        setSheetState(() {});
+                        _appState.updateShotAudio(
+                          widget.projectId,
+                          widget.episodeId,
+                          widget.shotId,
+                          volume: value,
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            icon: const Icon(Icons.play_arrow_rounded),
+                            label: const Text('Preview'),
+                            onPressed: () => _playAudioFromStart(clip),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            icon: const Icon(Icons.delete_outline_rounded, color: AppColors.danger),
+                            label: const Text('Delete', style: TextStyle(color: AppColors.danger)),
+                            onPressed: () async {
+                              await _deleteAudio(clip);
+                              setSheetState(() {});
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  void _openCameraEditor() {
+    _stopPlayback();
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => CameraEditorScreen(
+          projectId: widget.projectId,
+          episodeId: widget.episodeId,
+          shotId: widget.shotId,
+        ),
+      ),
+    );
+  }
+
   void _pickColor() {
     showModalBottomSheet(
       context: context,
@@ -351,6 +572,45 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
     );
   }
 
+  void _toggleOnionSkin() {
+    setState(() => _onionSkinEnabled = !_onionSkinEnabled);
+  }
+
+  void _pickOnionOpacity() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (sheetContext, setSheetState) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('Onion skin strength', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                const SizedBox(height: 4),
+                const Text(
+                  'Blue = previous frame · Red = next frame',
+                  style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+                ),
+                Slider(
+                  min: 0.1,
+                  max: 0.7,
+                  value: _onionOpacity,
+                  onChanged: (value) {
+                    setSheetState(() {});
+                    setState(() => _onionOpacity = value);
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   void _showMoveComingSoon() {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Move & select tools are coming in a future update ✏️')),
@@ -391,10 +651,14 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
               if (value == 'notes') _editNotes(shot);
               if (value == 'rename') _renameShot(shot);
               if (value == 'orientation') _toggleOrientation(shot);
+              if (value == 'camera') _openCameraEditor();
+              if (value == 'audio') _openAudioPanel();
             },
             itemBuilder: (_) => [
               const PopupMenuItem(value: 'rename', child: Text('Rename shot')),
               const PopupMenuItem(value: 'notes', child: Text('Edit notes')),
+              const PopupMenuItem(value: 'camera', child: Text('Camera move')),
+              const PopupMenuItem(value: 'audio', child: Text('Shot audio')),
               PopupMenuItem(
                 value: 'orientation',
                 child: Text(
@@ -416,14 +680,33 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
                   aspectRatio: shot.orientation.aspectRatio,
                   child: currentFrame == null
                       ? const SizedBox.shrink()
-                      : DrawingCanvas(
-                          key: ValueKey(currentFrame.id),
-                          strokes: currentFrame.strokes,
-                          tool: _tool,
-                          color: _color,
-                          brushSize: _brushSize,
-                          onStrokesChanged: _handleStrokesChanged,
-                        ),
+                      : (_isPlaying
+                          ? _PlaybackPreview(
+                              frame: currentFrame,
+                              camera: shot.cameraMoveEnabled
+                                  ? CameraState.lerp(
+                                      shot.cameraStart,
+                                      shot.cameraEnd,
+                                      shot.frames.length > 1
+                                          ? frameIndex / (shot.frames.length - 1)
+                                          : 0.0,
+                                    )
+                                  : null,
+                            )
+                          : DrawingCanvas(
+                              key: ValueKey(currentFrame.id),
+                              strokes: currentFrame.strokes,
+                              tool: _tool,
+                              color: _color,
+                              brushSize: _brushSize,
+                              onStrokesChanged: _handleStrokesChanged,
+                              onionOpacity: _onionSkinEnabled ? _onionOpacity : 0,
+                              onionBeforeStrokes:
+                                  frameIndex > 0 ? shot.frames[frameIndex - 1].strokes : null,
+                              onionAfterStrokes: frameIndex < shot.frames.length - 1
+                                  ? shot.frames[frameIndex + 1].strokes
+                                  : null,
+                            )),
                 ),
               ),
             ),
@@ -432,6 +715,7 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
               color: _color,
               canUndo: _undoStack.isNotEmpty,
               canRedo: _redoStack.isNotEmpty,
+              onionSkinEnabled: _onionSkinEnabled,
               onSelectPencil: () => setState(() => _tool = DrawTool.pencil),
               onSelectEraser: () => setState(() => _tool = DrawTool.eraser),
               onPickColor: _pickColor,
@@ -440,6 +724,8 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
               onRedo: _redo,
               onClear: _clearFrame,
               onMove: _showMoveComingSoon,
+              onToggleOnionSkin: _toggleOnionSkin,
+              onPickOnionOpacity: _pickOnionOpacity,
             ),
             Container(
               color: AppColors.surface,
@@ -492,6 +778,9 @@ class _Toolbar extends StatelessWidget {
   final VoidCallback onRedo;
   final VoidCallback onClear;
   final VoidCallback onMove;
+  final bool onionSkinEnabled;
+  final VoidCallback onToggleOnionSkin;
+  final VoidCallback onPickOnionOpacity;
 
   const _Toolbar({
     required this.tool,
@@ -506,6 +795,9 @@ class _Toolbar extends StatelessWidget {
     required this.onRedo,
     required this.onClear,
     required this.onMove,
+    required this.onionSkinEnabled,
+    required this.onToggleOnionSkin,
+    required this.onPickOnionOpacity,
   });
 
   @override
@@ -534,6 +826,12 @@ class _Toolbar extends StatelessWidget {
               onTap: onPickColor,
             ),
             _ToolButton(icon: Icons.line_weight_rounded, onTap: onPickBrushSize),
+            _ToolButton(
+              icon: Icons.layers_outlined,
+              selected: onionSkinEnabled,
+              onTap: onToggleOnionSkin,
+              onLongPress: onPickOnionOpacity,
+            ),
             _ToolButton(icon: Icons.undo_rounded, onTap: canUndo ? onUndo : null),
             _ToolButton(icon: Icons.redo_rounded, onTap: canRedo ? onRedo : null),
             _ToolButton(icon: Icons.delete_sweep_outlined, onTap: onClear),
@@ -550,6 +848,7 @@ class _ToolButton extends StatelessWidget {
   final Color? iconColor;
   final bool selected;
   final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
   final String? badge;
 
   const _ToolButton({
@@ -557,6 +856,7 @@ class _ToolButton extends StatelessWidget {
     this.iconColor,
     this.selected = false,
     required this.onTap,
+    this.onLongPress,
     this.badge,
   });
 
@@ -574,6 +874,7 @@ class _ToolButton extends StatelessWidget {
             child: InkWell(
               borderRadius: BorderRadius.circular(14),
               onTap: onTap,
+              onLongPress: onLongPress,
               child: Padding(
                 padding: const EdgeInsets.all(10),
                 child: Icon(
@@ -600,6 +901,44 @@ class _ToolButton extends StatelessWidget {
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+/// A plain, read-only render of a frame used during playback - deliberately
+/// not the interactive [DrawingCanvas], so the camera transform only ever
+/// moves the drawn content within a fixed, clipped viewport, rather than
+/// also carrying along the drawing canvas's own internal zoom/clip layers.
+class _PlaybackPreview extends StatelessWidget {
+  final AnimFrame frame;
+  final CameraState? camera;
+
+  const _PlaybackPreview({required this.frame, this.camera});
+
+  @override
+  Widget build(BuildContext context) {
+    final artwork = Container(
+      color: Colors.white,
+      child: CustomPaint(painter: FramePainter(strokes: frame.strokes)),
+    );
+
+    if (camera == null) return ClipRect(child: artwork);
+
+    return ClipRect(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final size = constraints.biggest;
+          final cam = camera!;
+          return Transform(
+            alignment: Alignment.center,
+            transform: Matrix4.identity()
+              ..translate(cam.x * size.width, cam.y * size.height)
+              ..rotateZ(cam.rotation)
+              ..scale(cam.zoom),
+            child: artwork,
+          );
+        },
       ),
     );
   }

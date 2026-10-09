@@ -25,6 +25,12 @@ class DrawingCanvas extends StatefulWidget {
   final double brushSize;
   final ValueChanged<List<Stroke>> onStrokesChanged;
 
+  /// Onion-skin ghost layers - the previous/next frame's strokes, shown
+  /// faintly behind the live drawing. Pass null/0 to disable.
+  final List<Stroke>? onionBeforeStrokes;
+  final List<Stroke>? onionAfterStrokes;
+  final double onionOpacity;
+
   const DrawingCanvas({
     super.key,
     required this.strokes,
@@ -32,6 +38,9 @@ class DrawingCanvas extends StatefulWidget {
     required this.color,
     required this.brushSize,
     required this.onStrokesChanged,
+    this.onionBeforeStrokes,
+    this.onionAfterStrokes,
+    this.onionOpacity = 0,
   });
 
   @override
@@ -220,9 +229,28 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
                   transform: Matrix4.identity()
                     ..translate(_viewTranslation.dx, _viewTranslation.dy)
                     ..scale(_viewScale),
-                  child: CustomPaint(
-                    foregroundPainter: FramePainter(strokes: _strokes),
-                    child: Container(color: Colors.white),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      Container(color: Colors.white),
+                      if (widget.onionOpacity > 0 && (widget.onionBeforeStrokes?.isNotEmpty ?? false))
+                        CustomPaint(
+                          painter: FramePainter(
+                            strokes: widget.onionBeforeStrokes!,
+                            opacity: widget.onionOpacity,
+                            tintColor: Colors.blue,
+                          ),
+                        ),
+                      if (widget.onionOpacity > 0 && (widget.onionAfterStrokes?.isNotEmpty ?? false))
+                        CustomPaint(
+                          painter: FramePainter(
+                            strokes: widget.onionAfterStrokes!,
+                            opacity: widget.onionOpacity,
+                            tintColor: Colors.red,
+                          ),
+                        ),
+                      CustomPaint(foregroundPainter: FramePainter(strokes: _strokes)),
+                    ],
                   ),
                 ),
               ),
