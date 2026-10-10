@@ -107,9 +107,9 @@ class StoryboardScreen extends StatelessWidget {
                             child: AspectRatio(
                               aspectRatio: shot.orientation.aspectRatio,
                               child: FramePreview(
-                                frame: hasStoryboardSketch
-                                    ? shot.storyboardFrame
-                                    : (shot.frames.isNotEmpty ? shot.frames.first : null),
+                                strokes: hasStoryboardSketch
+                                    ? shot.storyboardFrame.strokes
+                                    : (shot.frameCount > 0 ? shot.compositeStrokesAt(0) : const []),
                                 width: double.infinity,
                                 height: double.infinity,
                               ),

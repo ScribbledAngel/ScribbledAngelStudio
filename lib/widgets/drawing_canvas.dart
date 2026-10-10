@@ -31,6 +31,20 @@ class DrawingCanvas extends StatefulWidget {
   final List<Stroke>? onionAfterStrokes;
   final double onionOpacity;
 
+  /// Other visible layers of this SAME frame, shown in full color but not
+  /// interactive - bottom-to-top order, split by whether they sit below or
+  /// above the layer being drawn on, so the active layer draws in its
+  /// correct stacking position. Each is kept as its own paint layer (not
+  /// merged into one list) so an eraser stroke on one layer can't bleed
+  /// into another's content.
+  final List<List<Stroke>> layersBelow;
+  final List<List<Stroke>> layersAbove;
+
+  /// Whether the layer being drawn on is itself visible. Drawing still
+  /// works either way (so toggling visibility back on reveals what you
+  /// drew), but when false its strokes aren't painted.
+  final bool showActiveLayer;
+
   const DrawingCanvas({
     super.key,
     required this.strokes,
@@ -41,6 +55,9 @@ class DrawingCanvas extends StatefulWidget {
     this.onionBeforeStrokes,
     this.onionAfterStrokes,
     this.onionOpacity = 0,
+    this.layersBelow = const [],
+    this.layersAbove = const [],
+    this.showActiveLayer = true,
   });
 
   @override
@@ -249,7 +266,11 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
                             tintColor: Colors.red,
                           ),
                         ),
-                      CustomPaint(foregroundPainter: FramePainter(strokes: _strokes)),
+                      for (final layerStrokes in widget.layersBelow)
+                        if (layerStrokes.isNotEmpty) CustomPaint(painter: FramePainter(strokes: layerStrokes)),
+                      if (widget.showActiveLayer) CustomPaint(foregroundPainter: FramePainter(strokes: _strokes)),
+                      for (final layerStrokes in widget.layersAbove)
+                        if (layerStrokes.isNotEmpty) CustomPaint(painter: FramePainter(strokes: layerStrokes)),
                     ],
                   ),
                 ),

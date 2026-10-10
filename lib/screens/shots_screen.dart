@@ -43,7 +43,7 @@ class ShotsScreen extends StatelessWidget {
     final confirmed = await showConfirmDialog(
       context,
       title: 'Delete "${shot.name}"?',
-      message: 'This will permanently delete all ${shot.frames.length} drawn frame(s). This cannot be undone.',
+      message: 'This will permanently delete all ${shot.frameCount} drawn frame(s). This cannot be undone.',
     );
     if (confirmed && context.mounted) {
       await context.read<AppState>().deleteShot(projectId, episodeId, shot.id);
@@ -119,7 +119,7 @@ class ShotsScreen extends StatelessWidget {
                             ClipRRect(
                               borderRadius: BorderRadius.circular(8),
                               child: FramePreview(
-                                frame: shot.frames.isNotEmpty ? shot.frames.first : null,
+                                strokes: shot.frameCount > 0 ? shot.compositeStrokesAt(0) : const [],
                                 width: 48,
                                 height: 72,
                               ),
@@ -135,7 +135,7 @@ class ShotsScreen extends StatelessWidget {
                                   ),
                                   const SizedBox(height: 4),
                                   Text(
-                                    '${shot.frames.length} frame${shot.frames.length == 1 ? '' : 's'} · '
+                                    '${shot.frameCount} frame${shot.frameCount == 1 ? '' : 's'} · '
                                     '${shot.fps} fps · ${shot.durationSeconds.toStringAsFixed(1)}s',
                                     style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
                                   ),

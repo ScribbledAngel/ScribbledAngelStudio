@@ -2,6 +2,8 @@ import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 
 import '../data/storage_service.dart';
+import '../models/achievement.dart';
+import '../models/progress.dart';
 import '../models/project.dart';
 
 const _uuid = Uuid();
@@ -13,16 +15,48 @@ class AppState extends ChangeNotifier {
   final StorageService _storage = StorageService();
 
   List<Project> projects = [];
+  Progress progress = Progress();
   bool isLoading = true;
 
+  Set<String> get unlockedAchievements => computeUnlockedAchievements(projects, progress.everExported);
+
   Future<void> load() async {
-    projects = await _storage.loadProjects();
+    final data = await _storage.load();
+    projects = data.projects;
+    progress = data.progress;
     isLoading = false;
     notifyListeners();
   }
 
   Future<void> _persist() async {
-    await _storage.saveProjects(projects);
+    await _storage.save(projects, progress);
+  }
+
+  Future<void> recordExport(String projectId, String episodeId, String shotId) async {
+    final shot = getShot(projectId, episodeId, shotId);
+    shot?.exportChecklist.video = true;
+    progress.recordActivity(xp: 50, exportedShot: true);
+    await _commit();
+  }
+
+  Future<void> updateExportChecklist(
+    String projectId,
+    String episodeId,
+    String shotId, {
+    bool? audio,
+    bool? thumbnail,
+    bool? title,
+    bool? description,
+    bool? subtitles,
+  }) async {
+    final checklist = getShot(projectId, episodeId, shotId)?.exportChecklist;
+    if (checklist == null) return;
+    if (audio != null) checklist.audio = audio;
+    if (thumbnail != null) checklist.thumbnail = thumbnail;
+    if (title != null) checklist.title = title;
+    if (description != null) checklist.description = description;
+    if (subtitles != null) checklist.subtitles = subtitles;
+    await _commit();
   }
 
   Future<void> _commit() async {
@@ -138,16 +172,26 @@ class AppState extends ChangeNotifier {
     if (name != null) shot.name = name;
     if (notes != null) shot.notes = notes;
     if (fps != null) shot.fps = fps;
-    if (status != null) shot.status = status;
     if (orientation != null) shot.orientation = orientation;
+    if (status != null) _applyShotStatus(projectId, episodeId, shot, status);
     await _commit();
   }
 
   Future<void> cycleShotStatus(String projectId, String episodeId, String shotId) async {
     final shot = getShot(projectId, episodeId, shotId);
     if (shot == null) return;
-    shot.status = shot.status.next;
+    _applyShotStatus(projectId, episodeId, shot, shot.status.next);
     await _commit();
+  }
+
+  void _applyShotStatus(String projectId, String episodeId, Shot shot, ShotStatus status) {
+    shot.status = status;
+    if (status != ShotStatus.complete) return;
+    progress.recordActivity(xp: 20, completedShot: true);
+    final episode = getEpisode(projectId, episodeId);
+    final episodeNowComplete =
+        episode != null && episode.shots.isNotEmpty && episode.shots.every((s) => s.status == ShotStatus.complete);
+    if (episodeNowComplete) progress.recordActivity(xp: 100);
   }
 
   Future<void> deleteShot(String projectId, String episodeId, String shotId) async {
@@ -172,22 +216,52 @@ class AppState extends ChangeNotifier {
   }
 
   // ---- Frames ----
+  //
+  // Every layer in a shot is kept the same length (see Shot.frameCount), so
+  // "frame 5" always means the same point in time across every layer.
 
+  Layer? _findLayer(Shot shot, String layerId) {
+    for (final l in shot.layers) {
+      if (l.id == layerId) return l;
+    }
+    return null;
+  }
+
+  /// Adds a new frame at the shot's overall timeline position. The active
+  /// layer gets a genuinely blank new frame to draw into; every other layer
+  /// gets a copy of its own last frame at that position, so (for example) a
+  /// background layer doesn't go blank just because you added a frame for
+  /// the character layer.
   Future<AnimFrame?> addFrame(
     String projectId,
     String episodeId,
     String shotId, {
+    required String activeLayerId,
     int? afterIndex,
   }) async {
     final shot = getShot(projectId, episodeId, shotId);
-    if (shot == null) return null;
-    final frame = AnimFrame(id: _uuid.v4());
-    final insertAt = afterIndex == null ? shot.frames.length : afterIndex + 1;
-    shot.frames.insert(insertAt, frame);
+    if (shot == null || shot.layers.isEmpty) return null;
+    final insertAt = afterIndex == null ? shot.frameCount : afterIndex + 1;
+    AnimFrame? newActiveFrame;
+    for (final layer in shot.layers) {
+      if (layer.id == activeLayerId) {
+        final frame = AnimFrame(id: _uuid.v4());
+        layer.frames.insert(insertAt, frame);
+        newActiveFrame = frame;
+      } else {
+        final hasPrevious = insertAt > 0 && insertAt - 1 < layer.frames.length;
+        final held = hasPrevious ? layer.frames[insertAt - 1].copy() : AnimFrame(id: _uuid.v4());
+        held.id = _uuid.v4();
+        layer.frames.insert(insertAt, held);
+      }
+    }
+    progress.recordActivity(xp: 5, addedFrame: true);
     await _commit();
-    return frame;
+    return newActiveFrame;
   }
 
+  /// Duplicates the frame at [index] across every layer, inserted right
+  /// after it.
   Future<int?> duplicateFrame(
     String projectId,
     String episodeId,
@@ -195,14 +269,19 @@ class AppState extends ChangeNotifier {
     int index,
   ) async {
     final shot = getShot(projectId, episodeId, shotId);
-    if (shot == null || index < 0 || index >= shot.frames.length) return null;
-    final copy = shot.frames[index].copy();
-    copy.id = _uuid.v4();
-    shot.frames.insert(index + 1, copy);
+    if (shot == null || shot.layers.isEmpty || index < 0 || index >= shot.frameCount) return null;
+    for (final layer in shot.layers) {
+      final copy = layer.frames[index].copy();
+      copy.id = _uuid.v4();
+      layer.frames.insert(index + 1, copy);
+    }
+    progress.recordActivity(xp: 2, addedFrame: true);
     await _commit();
     return index + 1;
   }
 
+  /// Removes the frame at [index] from every layer. Refuses if it's the
+  /// shot's only frame.
   Future<void> deleteFrame(
     String projectId,
     String episodeId,
@@ -210,8 +289,10 @@ class AppState extends ChangeNotifier {
     int index,
   ) async {
     final shot = getShot(projectId, episodeId, shotId);
-    if (shot == null || index < 0 || index >= shot.frames.length) return;
-    shot.frames.removeAt(index);
+    if (shot == null || shot.frameCount <= 1 || index < 0 || index >= shot.frameCount) return;
+    for (final layer in shot.layers) {
+      layer.frames.removeAt(index);
+    }
     await _commit();
   }
 
@@ -219,12 +300,97 @@ class AppState extends ChangeNotifier {
     String projectId,
     String episodeId,
     String shotId,
+    String layerId,
     int index,
     List<Stroke> strokes,
   ) async {
     final shot = getShot(projectId, episodeId, shotId);
-    if (shot == null || index < 0 || index >= shot.frames.length) return;
-    shot.frames[index].strokes = strokes;
+    final layer = shot == null ? null : _findLayer(shot, layerId);
+    if (layer == null || index < 0 || index >= layer.frames.length) return;
+    layer.frames[index].strokes = strokes;
+    progress.recordActivity(drewFrame: true);
+    await _commit();
+  }
+
+  // ---- Layers ----
+
+  Future<Layer?> addLayer(
+    String projectId,
+    String episodeId,
+    String shotId, {
+    String? name,
+  }) async {
+    final shot = getShot(projectId, episodeId, shotId);
+    if (shot == null) return null;
+    final frameCount = shot.frameCount == 0 ? 1 : shot.frameCount;
+    final layer = Layer(
+      id: _uuid.v4(),
+      name: name ?? 'Layer ${shot.layers.length + 1}',
+      frames: List.generate(frameCount, (_) => AnimFrame(id: _uuid.v4())),
+    );
+    shot.layers.add(layer);
+    await _commit();
+    return layer;
+  }
+
+  Future<void> deleteLayer(String projectId, String episodeId, String shotId, String layerId) async {
+    final shot = getShot(projectId, episodeId, shotId);
+    if (shot == null || shot.layers.length <= 1) return;
+    shot.layers.removeWhere((l) => l.id == layerId);
+    await _commit();
+  }
+
+  Future<void> renameLayer(
+    String projectId,
+    String episodeId,
+    String shotId,
+    String layerId,
+    String name,
+  ) async {
+    final shot = getShot(projectId, episodeId, shotId);
+    final layer = shot == null ? null : _findLayer(shot, layerId);
+    if (layer == null) return;
+    layer.name = name;
+    await _commit();
+  }
+
+  Future<void> toggleLayerVisibility(String projectId, String episodeId, String shotId, String layerId) async {
+    final shot = getShot(projectId, episodeId, shotId);
+    final layer = shot == null ? null : _findLayer(shot, layerId);
+    if (layer == null) return;
+    layer.visible = !layer.visible;
+    await _commit();
+  }
+
+  Future<void> reorderLayers(
+    String projectId,
+    String episodeId,
+    String shotId,
+    int oldIndex,
+    int newIndex,
+  ) async {
+    final shot = getShot(projectId, episodeId, shotId);
+    if (shot == null) return;
+    if (newIndex > oldIndex) newIndex -= 1;
+    final layer = shot.layers.removeAt(oldIndex);
+    shot.layers.insert(newIndex, layer);
+    await _commit();
+  }
+
+  /// Records the drawing canvas's actual pixel size the first time a shot
+  /// is opened, so export can later scale strokes (stored in raw screen
+  /// coordinates) correctly onto a different target resolution.
+  Future<void> recordCanvasSizeIfUnset(
+    String projectId,
+    String episodeId,
+    String shotId,
+    double width,
+    double height,
+  ) async {
+    final shot = getShot(projectId, episodeId, shotId);
+    if (shot == null || shot.canvasWidthPx != null) return;
+    shot.canvasWidthPx = width;
+    shot.canvasHeightPx = height;
     await _commit();
   }
 

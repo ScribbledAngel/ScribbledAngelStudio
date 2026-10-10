@@ -7,6 +7,8 @@ export 'frame.dart';
 export 'stroke.dart';
 export 'camera_state.dart';
 export 'audio_clip.dart';
+export 'export_checklist.dart';
+export 'layer.dart';
 
 class Project {
   String id;

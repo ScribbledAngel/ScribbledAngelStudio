@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 
-import '../models/frame.dart';
+import '../models/stroke.dart';
 import '../theme/app_theme.dart';
 import 'frame_preview.dart';
 
 class TimelineStrip extends StatelessWidget {
-  final List<AnimFrame> frames;
+  final int frameCount;
+  final List<Stroke> Function(int index) compositeStrokesAt;
   final int currentIndex;
   final ValueChanged<int> onSelect;
   final VoidCallback onAddFrame;
@@ -14,7 +15,8 @@ class TimelineStrip extends StatelessWidget {
 
   const TimelineStrip({
     super.key,
-    required this.frames,
+    required this.frameCount,
+    required this.compositeStrokesAt,
     required this.currentIndex,
     required this.onSelect,
     required this.onAddFrame,
@@ -51,7 +53,7 @@ class TimelineStrip extends StatelessWidget {
             ListTile(
               leading: const Icon(Icons.delete_outline_rounded, color: AppColors.danger),
               title: const Text('Delete frame', style: TextStyle(color: AppColors.danger)),
-              enabled: frames.length > 1,
+              enabled: frameCount > 1,
               onTap: () {
                 Navigator.pop(sheetContext);
                 onDelete(index);
@@ -71,10 +73,10 @@ class TimelineStrip extends StatelessWidget {
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        itemCount: frames.length + 1,
+        itemCount: frameCount + 1,
         separatorBuilder: (_, __) => const SizedBox(width: 8),
         itemBuilder: (context, index) {
-          if (index == frames.length) {
+          if (index == frameCount) {
             return _AddFrameButton(onTap: onAddFrame);
           }
           final isSelected = index == currentIndex;
@@ -94,7 +96,7 @@ class TimelineStrip extends StatelessWidget {
                   ),
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(6),
-                    child: FramePreview(frame: frames[index], width: 48, height: 72),
+                    child: FramePreview(strokes: compositeStrokesAt(index), width: 48, height: 72),
                   ),
                 ),
                 const SizedBox(height: 4),

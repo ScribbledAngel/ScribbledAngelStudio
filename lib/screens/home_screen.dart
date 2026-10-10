@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import '../widgets/big_button.dart';
+import 'progress_screen.dart';
 import 'projects_screen.dart';
 
 class HomeScreen extends StatelessWidget {
@@ -45,6 +46,15 @@ class HomeScreen extends StatelessWidget {
                     : '$projectCount project${projectCount == 1 ? '' : 's'}',
                 onTap: () => Navigator.of(context).push(
                   MaterialPageRoute(builder: (_) => const ProjectsScreen()),
+                ),
+              ),
+              const SizedBox(height: 12),
+              BigButton(
+                icon: Icons.local_fire_department_rounded,
+                label: 'Progress',
+                subtitle: '${appState.progress.totalXp} XP · ${appState.progress.currentStreak} day streak',
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const ProgressScreen()),
                 ),
               ),
               const Spacer(),

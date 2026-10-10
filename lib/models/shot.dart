@@ -1,6 +1,9 @@
 import 'audio_clip.dart';
 import 'camera_state.dart';
+import 'export_checklist.dart';
 import 'frame.dart';
+import 'layer.dart';
+import 'stroke.dart';
 
 enum ShotStatus { notStarted, inProgress, complete }
 
@@ -48,17 +51,21 @@ extension ShotStatusX on ShotStatus {
 }
 
 /// A single shot within an episode, e.g. "001 Cold Open".
+///
+/// Frames live inside [layers] now, not directly on the shot - every layer
+/// is kept the same length (see [frameCount]), so "frame 5" always means
+/// the same point in time across every layer.
 class Shot {
   String id;
   String name;
   String notes;
   int fps;
-  List<AnimFrame> frames;
+  List<Layer> layers;
   ShotStatus status;
   CanvasOrientation orientation;
 
   /// A separate, simple sketch used for the storyboard overview - not part
-  /// of the animated frames themselves.
+  /// of the animated frames themselves, and not layered.
   AnimFrame storyboardFrame;
 
   bool cameraMoveEnabled;
@@ -67,12 +74,22 @@ class Shot {
 
   AudioClip? audioClip;
 
+  /// The pixel size the drawing canvas was actually rendered at when this
+  /// shot's strokes were recorded (strokes are stored in raw screen
+  /// coordinates, not normalized 0-1 fractions). Export needs this to scale
+  /// the artwork correctly onto a different target resolution. Set once,
+  /// the first time a stroke is drawn.
+  double? canvasWidthPx;
+  double? canvasHeightPx;
+
+  ExportChecklist exportChecklist;
+
   Shot({
     required this.id,
     required this.name,
     this.notes = '',
     this.fps = 12,
-    List<AnimFrame>? frames,
+    List<Layer>? layers,
     this.status = ShotStatus.notStarted,
     this.orientation = CanvasOrientation.landscape,
     AnimFrame? storyboardFrame,
@@ -80,19 +97,40 @@ class Shot {
     CameraState? cameraStart,
     CameraState? cameraEnd,
     this.audioClip,
-  })  : frames = frames ?? [],
+    this.canvasWidthPx,
+    this.canvasHeightPx,
+    ExportChecklist? exportChecklist,
+  })  : layers = layers ?? [Layer(id: '$id-layer-1', name: 'Layer 1')],
         storyboardFrame = storyboardFrame ?? AnimFrame(id: '$id-storyboard'),
         cameraStart = cameraStart ?? CameraState(),
-        cameraEnd = cameraEnd ?? CameraState();
+        cameraEnd = cameraEnd ?? CameraState(),
+        exportChecklist = exportChecklist ?? ExportChecklist();
 
-  double get durationSeconds => fps > 0 ? frames.length / fps : 0;
+  /// The shot's overall timeline length - every layer is kept this long.
+  int get frameCount => layers.isEmpty ? 0 : layers.first.frames.length;
+
+  double get durationSeconds => fps > 0 ? frameCount / fps : 0;
+
+  /// All visible layers' strokes at [index], bottom layer first, merged
+  /// into one paint order - what the composed frame actually looks like.
+  List<Stroke> compositeStrokesAt(int index) {
+    final merged = <Stroke>[];
+    for (final layer in layers) {
+      if (!layer.visible) continue;
+      if (index < 0 || index >= layer.frames.length) continue;
+      merged.addAll(layer.frames[index].strokes);
+    }
+    return merged;
+  }
+
+  bool get hasAnyStrokes => layers.any((l) => l.frames.any((f) => f.strokes.isNotEmpty));
 
   Map<String, dynamic> toJson() => {
         'id': id,
         'name': name,
         'notes': notes,
         'fps': fps,
-        'frames': frames.map((f) => f.toJson()).toList(),
+        'layers': layers.map((l) => l.toJson()).toList(),
         'status': status.name,
         'orientation': orientation.name,
         'storyboardFrame': storyboardFrame.toJson(),
@@ -100,6 +138,9 @@ class Shot {
         'cameraStart': cameraStart.toJson(),
         'cameraEnd': cameraEnd.toJson(),
         'audioClip': audioClip?.toJson(),
+        'canvasWidthPx': canvasWidthPx,
+        'canvasHeightPx': canvasHeightPx,
+        'exportChecklist': exportChecklist.toJson(),
       };
 
   static Shot fromJson(Map<String, dynamic> json) => Shot(
@@ -107,9 +148,7 @@ class Shot {
         name: json['name'] as String,
         notes: json['notes'] as String? ?? '',
         fps: json['fps'] as int? ?? 12,
-        frames: (json['frames'] as List)
-            .map((f) => AnimFrame.fromJson(f as Map<String, dynamic>))
-            .toList(),
+        layers: _layersFromJson(json),
         status: ShotStatus.values.firstWhere(
           (s) => s.name == json['status'],
           orElse: () => ShotStatus.notStarted,
@@ -131,5 +170,25 @@ class Shot {
         audioClip: json['audioClip'] != null
             ? AudioClip.fromJson(json['audioClip'] as Map<String, dynamic>)
             : null,
+        canvasWidthPx: (json['canvasWidthPx'] as num?)?.toDouble(),
+        canvasHeightPx: (json['canvasHeightPx'] as num?)?.toDouble(),
+        exportChecklist: json['exportChecklist'] != null
+            ? ExportChecklist.fromJson(json['exportChecklist'] as Map<String, dynamic>)
+            : null,
       );
+
+  /// Reads `layers` when present; otherwise migrates an older save file's
+  /// flat `frames` list into a single default layer, so nothing drawn
+  /// before this feature existed is lost.
+  static List<Layer>? _layersFromJson(Map<String, dynamic> json) {
+    if (json['layers'] != null) {
+      return (json['layers'] as List).map((l) => Layer.fromJson(l as Map<String, dynamic>)).toList();
+    }
+    if (json['frames'] != null) {
+      final frames =
+          (json['frames'] as List).map((f) => AnimFrame.fromJson(f as Map<String, dynamic>)).toList();
+      return [Layer(id: '${json['id']}-layer-1', name: 'Layer 1', frames: frames)];
+    }
+    return null;
+  }
 }

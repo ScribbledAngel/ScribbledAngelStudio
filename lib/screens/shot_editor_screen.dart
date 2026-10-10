@@ -7,7 +7,7 @@ import 'package:provider/provider.dart';
 import '../data/audio_service.dart';
 import '../models/audio_clip.dart';
 import '../models/camera_state.dart';
-import '../models/frame.dart';
+import '../models/layer.dart';
 import '../models/shot.dart';
 import '../models/stroke.dart';
 import '../state/app_state.dart';
@@ -17,6 +17,7 @@ import '../widgets/frame_painter.dart';
 import '../widgets/prompt_dialog.dart';
 import '../widgets/timeline_strip.dart';
 import 'camera_editor_screen.dart';
+import 'export_screen.dart';
 
 const _palette = <Color>[
   Colors.black,
@@ -52,6 +53,7 @@ class ShotEditorScreen extends StatefulWidget {
 
 class _ShotEditorScreenState extends State<ShotEditorScreen> {
   int _currentFrameIndex = 0;
+  String? _activeLayerId;
   DrawTool _tool = DrawTool.pencil;
   Color _color = Colors.black;
   double _brushSize = 6;
@@ -92,9 +94,29 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
   Future<void> _ensureAtLeastOneFrame() async {
     if (!mounted) return;
     final shot = _shot;
-    if (shot != null && shot.frames.isEmpty) {
-      await _appState.addFrame(widget.projectId, widget.episodeId, widget.shotId);
+    if (shot != null && shot.frameCount == 0 && shot.layers.isNotEmpty) {
+      await _appState.addFrame(
+        widget.projectId,
+        widget.episodeId,
+        widget.shotId,
+        activeLayerId: shot.layers.first.id,
+      );
     }
+  }
+
+  /// Picks a valid active layer if none is set yet, or the previously
+  /// active one was deleted - defaults to the top (frontmost) layer.
+  void _ensureActiveLayer(Shot shot) {
+    if (shot.layers.isEmpty) return;
+    final stillExists = shot.layers.any((l) => l.id == _activeLayerId);
+    if (!stillExists) _activeLayerId = shot.layers.last.id;
+  }
+
+  Layer? _activeLayer(Shot shot) {
+    for (final l in shot.layers) {
+      if (l.id == _activeLayerId) return l;
+    }
+    return null;
   }
 
   DateTime? _playbackStartTime;
@@ -123,7 +145,7 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
       _stopPlayback();
       return;
     }
-    if (shot.frames.length < 2) return;
+    if (shot.frameCount < 2) return;
     setState(() => _isPlaying = true);
     final clip = shot.audioClip;
     if (clip != null) _playAudioFromStart(clip);
@@ -136,9 +158,9 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
     _playbackTimer = Timer.periodic(const Duration(milliseconds: 16), (_) {
       final current = _shot;
       final startTime = _playbackStartTime;
-      if (current == null || current.frames.isEmpty || startTime == null) return;
+      if (current == null || current.frameCount == 0 || startTime == null) return;
       final elapsedMs = DateTime.now().difference(startTime).inMilliseconds;
-      final totalFrames = current.frames.length;
+      final totalFrames = current.frameCount;
       final loopedIndex = (elapsedMs / frameMs).floor() % totalFrames;
       if (loopedIndex == _currentFrameIndex) return;
       if (loopedIndex < _currentFrameIndex && current.audioClip != null) {
@@ -159,14 +181,16 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
 
   void _handleStrokesChanged(List<Stroke> newStrokes) {
     final shot = _shot;
-    if (shot == null || _currentFrameIndex >= shot.frames.length) return;
-    final previous = shot.frames[_currentFrameIndex].strokes.map((s) => s.copy()).toList();
+    final layer = shot == null ? null : _activeLayer(shot);
+    if (layer == null || _currentFrameIndex >= layer.frames.length) return;
+    final previous = layer.frames[_currentFrameIndex].strokes.map((s) => s.copy()).toList();
     _undoStack.add(previous);
     _redoStack.clear();
     _appState.updateFrameStrokes(
       widget.projectId,
       widget.episodeId,
       widget.shotId,
+      layer.id,
       _currentFrameIndex,
       newStrokes,
     );
@@ -174,14 +198,16 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
 
   void _undo() {
     final shot = _shot;
-    if (shot == null || _undoStack.isEmpty) return;
-    final current = shot.frames[_currentFrameIndex].strokes.map((s) => s.copy()).toList();
+    final layer = shot == null ? null : _activeLayer(shot);
+    if (layer == null || _undoStack.isEmpty) return;
+    final current = layer.frames[_currentFrameIndex].strokes.map((s) => s.copy()).toList();
     _redoStack.add(current);
     final previous = _undoStack.removeLast();
     _appState.updateFrameStrokes(
       widget.projectId,
       widget.episodeId,
       widget.shotId,
+      layer.id,
       _currentFrameIndex,
       previous,
     );
@@ -190,14 +216,16 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
 
   void _redo() {
     final shot = _shot;
-    if (shot == null || _redoStack.isEmpty) return;
-    final current = shot.frames[_currentFrameIndex].strokes.map((s) => s.copy()).toList();
+    final layer = shot == null ? null : _activeLayer(shot);
+    if (layer == null || _redoStack.isEmpty) return;
+    final current = layer.frames[_currentFrameIndex].strokes.map((s) => s.copy()).toList();
     _undoStack.add(current);
     final next = _redoStack.removeLast();
     _appState.updateFrameStrokes(
       widget.projectId,
       widget.episodeId,
       widget.shotId,
+      layer.id,
       _currentFrameIndex,
       next,
     );
@@ -218,11 +246,15 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
   }
 
   Future<void> _addFrame() async {
+    final shot = _shot;
+    final layer = shot == null ? null : _activeLayer(shot);
+    if (layer == null) return;
     _stopPlayback();
     final newFrame = await _appState.addFrame(
       widget.projectId,
       widget.episodeId,
       widget.shotId,
+      activeLayerId: layer.id,
       afterIndex: _currentFrameIndex,
     );
     if (newFrame == null || !mounted) return;
@@ -251,7 +283,7 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
 
   Future<void> _deleteFrame(int index) async {
     final shot = _shot;
-    if (shot == null || shot.frames.length <= 1) return;
+    if (shot == null || shot.frameCount <= 1) return;
     _stopPlayback();
     await _appState.deleteFrame(widget.projectId, widget.episodeId, widget.shotId, index);
     if (!mounted) return;
@@ -290,7 +322,7 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
   }
 
   Future<void> _toggleOrientation(Shot shot) async {
-    final hasDrawings = shot.frames.any((f) => f.strokes.isNotEmpty);
+    final hasDrawings = shot.hasAnyStrokes;
     final newOrientation = shot.orientation == CanvasOrientation.landscape
         ? CanvasOrientation.portrait
         : CanvasOrientation.landscape;
@@ -493,6 +525,19 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
     );
   }
 
+  void _openExport() {
+    _stopPlayback();
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ExportScreen(
+          projectId: widget.projectId,
+          episodeId: widget.episodeId,
+          shotId: widget.shotId,
+        ),
+      ),
+    );
+  }
+
   void _pickColor() {
     showModalBottomSheet(
       context: context,
@@ -617,6 +662,181 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
     );
   }
 
+  void _selectLayer(String layerId) {
+    setState(() {
+      _activeLayerId = layerId;
+      _undoStack.clear();
+      _redoStack.clear();
+    });
+  }
+
+  Future<void> _addLayer() async {
+    final layer = await _appState.addLayer(widget.projectId, widget.episodeId, widget.shotId);
+    if (layer == null || !mounted) return;
+    _selectLayer(layer.id);
+  }
+
+  Future<void> _renameLayer(Layer layer) async {
+    final result = await showPromptDialog(
+      context,
+      title: 'Rename layer',
+      fields: [PromptField(label: 'Name', initialValue: layer.name)],
+    );
+    if (result == null || result[0].isEmpty) return;
+    await _appState.renameLayer(widget.projectId, widget.episodeId, widget.shotId, layer.id, result[0]);
+  }
+
+  Future<void> _deleteLayer(Layer layer) async {
+    final confirmed = await showConfirmDialog(
+      context,
+      title: 'Delete "${layer.name}"?',
+      message: 'This deletes everything drawn on this layer, in every frame. This cannot be undone.',
+    );
+    if (!confirmed) return;
+    await _appState.deleteLayer(widget.projectId, widget.episodeId, widget.shotId, layer.id);
+  }
+
+  void _openLayerPanel() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (sheetContext, setSheetState) {
+          final shot = context.watch<AppState>().getShot(widget.projectId, widget.episodeId, widget.shotId);
+          if (shot == null) return const SizedBox.shrink();
+          // Shown top-to-bottom matching the visual stack: frontmost first.
+          final layersTopFirst = shot.layers.reversed.toList();
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 20, 16, 20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    child: Row(
+                      children: [
+                        const Text('Layers', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                        const Spacer(),
+                        TextButton.icon(
+                          icon: const Icon(Icons.add_rounded, size: 18),
+                          label: const Text('Add'),
+                          onPressed: () async {
+                            await _addLayer();
+                            setSheetState(() {});
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                  ConstrainedBox(
+                    constraints: BoxConstraints(maxHeight: MediaQuery.of(sheetContext).size.height * 0.5),
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: layersTopFirst.length,
+                      itemBuilder: (context, displayIndex) {
+                        final layer = layersTopFirst[displayIndex];
+                        final isActive = layer.id == _activeLayerId;
+                        final realIndex = shot.layers.length - 1 - displayIndex;
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 6),
+                          child: Material(
+                            color: isActive ? AppColors.accent.withOpacity(0.15) : AppColors.surfaceHigh,
+                            borderRadius: BorderRadius.circular(12),
+                            clipBehavior: Clip.antiAlias,
+                            child: ListTile(
+                            onTap: () {
+                              _selectLayer(layer.id);
+                              setSheetState(() {});
+                            },
+                            leading: IconButton(
+                              icon: Icon(
+                                layer.visible ? Icons.visibility_rounded : Icons.visibility_off_outlined,
+                                color: layer.visible ? AppColors.textPrimary : AppColors.textSecondary,
+                              ),
+                              onPressed: () async {
+                                await _appState.toggleLayerVisibility(
+                                  widget.projectId,
+                                  widget.episodeId,
+                                  widget.shotId,
+                                  layer.id,
+                                );
+                                setSheetState(() {});
+                              },
+                            ),
+                            title: Text(
+                              layer.name,
+                              style: TextStyle(
+                                fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
+                                color: isActive ? AppColors.accent : AppColors.textPrimary,
+                              ),
+                            ),
+                            onLongPress: () async {
+                              await _renameLayer(layer);
+                              setSheetState(() {});
+                            },
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  icon: const Icon(Icons.arrow_upward_rounded, size: 18),
+                                  onPressed: realIndex >= shot.layers.length - 1
+                                      ? null
+                                      : () async {
+                                          await _appState.reorderLayers(
+                                            widget.projectId,
+                                            widget.episodeId,
+                                            widget.shotId,
+                                            realIndex,
+                                            realIndex + 2,
+                                          );
+                                          setSheetState(() {});
+                                        },
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.arrow_downward_rounded, size: 18),
+                                  onPressed: realIndex <= 0
+                                      ? null
+                                      : () async {
+                                          await _appState.reorderLayers(
+                                            widget.projectId,
+                                            widget.episodeId,
+                                            widget.shotId,
+                                            realIndex,
+                                            realIndex - 1,
+                                          );
+                                          setSheetState(() {});
+                                        },
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.delete_outline_rounded, color: AppColors.danger, size: 18),
+                                  onPressed: shot.layers.length <= 1
+                                      ? null
+                                      : () async {
+                                          await _deleteLayer(layer);
+                                          setSheetState(() {});
+                                        },
+                                ),
+                              ],
+                            ),
+                          ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final shot = context.watch<AppState>().getShot(widget.projectId, widget.episodeId, widget.shotId);
@@ -625,12 +845,28 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
       return const Scaffold(body: Center(child: Text('Shot not found')));
     }
 
-    final maxIndex = shot.frames.isEmpty ? 0 : shot.frames.length - 1;
+    _ensureActiveLayer(shot);
+    final activeLayer = _activeLayer(shot);
+
+    final maxIndex = shot.frameCount == 0 ? 0 : shot.frameCount - 1;
     final frameIndex = _currentFrameIndex < 0
         ? 0
         : (_currentFrameIndex > maxIndex ? maxIndex : _currentFrameIndex);
-    final hasFrames = shot.frames.isNotEmpty;
-    final currentFrame = hasFrames ? shot.frames[frameIndex] : null;
+    final hasFrames = shot.frameCount > 0 && activeLayer != null;
+    final activeFrame = hasFrames ? activeLayer.frames[frameIndex] : null;
+
+    final layersBelow = <List<Stroke>>[];
+    final layersAbove = <List<Stroke>>[];
+    var passedActive = false;
+    for (final layer in shot.layers) {
+      if (layer.id == activeLayer?.id) {
+        passedActive = true;
+        continue;
+      }
+      if (!layer.visible || frameIndex >= layer.frames.length) continue;
+      final strokes = layer.frames[frameIndex].strokes;
+      (passedActive ? layersAbove : layersBelow).add(strokes);
+    }
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -644,7 +880,7 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
           IconButton(
             tooltip: _isPlaying ? 'Pause' : 'Play',
             icon: Icon(_isPlaying ? Icons.pause_circle_filled_rounded : Icons.play_circle_fill_rounded, size: 32),
-            onPressed: shot.frames.length < 2 ? null : () => _togglePlayback(shot),
+            onPressed: shot.frameCount < 2 ? null : () => _togglePlayback(shot),
           ),
           PopupMenuButton<String>(
             onSelected: (value) {
@@ -653,12 +889,14 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
               if (value == 'orientation') _toggleOrientation(shot);
               if (value == 'camera') _openCameraEditor();
               if (value == 'audio') _openAudioPanel();
+              if (value == 'export') _openExport();
             },
             itemBuilder: (_) => [
               const PopupMenuItem(value: 'rename', child: Text('Rename shot')),
               const PopupMenuItem(value: 'notes', child: Text('Edit notes')),
               const PopupMenuItem(value: 'camera', child: Text('Camera move')),
               const PopupMenuItem(value: 'audio', child: Text('Shot audio')),
+              const PopupMenuItem(value: 'export', child: Text('Export video')),
               PopupMenuItem(
                 value: 'orientation',
                 child: Text(
@@ -678,35 +916,53 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
               child: Center(
                 child: AspectRatio(
                   aspectRatio: shot.orientation.aspectRatio,
-                  child: currentFrame == null
+                  child: activeFrame == null
                       ? const SizedBox.shrink()
-                      : (_isPlaying
-                          ? _PlaybackPreview(
-                              frame: currentFrame,
-                              camera: shot.cameraMoveEnabled
-                                  ? CameraState.lerp(
-                                      shot.cameraStart,
-                                      shot.cameraEnd,
-                                      shot.frames.length > 1
-                                          ? frameIndex / (shot.frames.length - 1)
-                                          : 0.0,
-                                    )
-                                  : null,
-                            )
-                          : DrawingCanvas(
-                              key: ValueKey(currentFrame.id),
-                              strokes: currentFrame.strokes,
-                              tool: _tool,
-                              color: _color,
-                              brushSize: _brushSize,
-                              onStrokesChanged: _handleStrokesChanged,
-                              onionOpacity: _onionSkinEnabled ? _onionOpacity : 0,
-                              onionBeforeStrokes:
-                                  frameIndex > 0 ? shot.frames[frameIndex - 1].strokes : null,
-                              onionAfterStrokes: frameIndex < shot.frames.length - 1
-                                  ? shot.frames[frameIndex + 1].strokes
-                                  : null,
-                            )),
+                      : LayoutBuilder(
+                          builder: (context, constraints) {
+                            if (shot.canvasWidthPx == null) {
+                              final size = constraints.biggest;
+                              WidgetsBinding.instance.addPostFrameCallback((_) {
+                                if (!mounted) return;
+                                _appState.recordCanvasSizeIfUnset(
+                                  widget.projectId,
+                                  widget.episodeId,
+                                  widget.shotId,
+                                  size.width,
+                                  size.height,
+                                );
+                              });
+                            }
+                            return _isPlaying
+                                ? _PlaybackPreview(
+                                    strokes: shot.compositeStrokesAt(frameIndex),
+                                    camera: shot.cameraMoveEnabled
+                                        ? CameraState.lerp(
+                                            shot.cameraStart,
+                                            shot.cameraEnd,
+                                            shot.frameCount > 1 ? frameIndex / (shot.frameCount - 1) : 0.0,
+                                          )
+                                        : null,
+                                  )
+                                : DrawingCanvas(
+                                    key: ValueKey(activeFrame.id),
+                                    strokes: activeFrame.strokes,
+                                    tool: _tool,
+                                    color: _color,
+                                    brushSize: _brushSize,
+                                    onStrokesChanged: _handleStrokesChanged,
+                                    onionOpacity: _onionSkinEnabled ? _onionOpacity : 0,
+                                    onionBeforeStrokes:
+                                        frameIndex > 0 ? shot.compositeStrokesAt(frameIndex - 1) : null,
+                                    onionAfterStrokes: frameIndex < shot.frameCount - 1
+                                        ? shot.compositeStrokesAt(frameIndex + 1)
+                                        : null,
+                                    layersBelow: layersBelow,
+                                    layersAbove: layersAbove,
+                                    showActiveLayer: activeLayer!.visible,
+                                  );
+                          },
+                        ),
                 ),
               ),
             ),
@@ -726,6 +982,7 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
               onMove: _showMoveComingSoon,
               onToggleOnionSkin: _toggleOnionSkin,
               onPickOnionOpacity: _pickOnionOpacity,
+              onOpenLayers: _openLayerPanel,
             ),
             Container(
               color: AppColors.surface,
@@ -742,16 +999,39 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
                     icon: const Icon(Icons.add_circle_outline_rounded, size: 20),
                     onPressed: () => _changeFps(shot, 1),
                   ),
+                  const SizedBox(width: 8),
+                  GestureDetector(
+                    onTap: _openLayerPanel,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: AppColors.surfaceHigh,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.layers_rounded, size: 14, color: AppColors.accent),
+                          const SizedBox(width: 4),
+                          Text(
+                            activeLayer?.name ?? '',
+                            style: const TextStyle(fontSize: 12, color: AppColors.accent),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                   const Spacer(),
                   Text(
-                    '${shot.frames.length} frames · ${shot.durationSeconds.toStringAsFixed(1)}s',
+                    '${shot.frameCount} frames · ${shot.durationSeconds.toStringAsFixed(1)}s',
                     style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
                   ),
                 ],
               ),
             ),
             TimelineStrip(
-              frames: shot.frames,
+              frameCount: shot.frameCount,
+              compositeStrokesAt: shot.compositeStrokesAt,
               currentIndex: frameIndex,
               onSelect: _selectFrame,
               onAddFrame: _addFrame,
@@ -781,6 +1061,7 @@ class _Toolbar extends StatelessWidget {
   final bool onionSkinEnabled;
   final VoidCallback onToggleOnionSkin;
   final VoidCallback onPickOnionOpacity;
+  final VoidCallback onOpenLayers;
 
   const _Toolbar({
     required this.tool,
@@ -794,6 +1075,7 @@ class _Toolbar extends StatelessWidget {
     required this.onUndo,
     required this.onRedo,
     required this.onClear,
+    required this.onOpenLayers,
     required this.onMove,
     required this.onionSkinEnabled,
     required this.onToggleOnionSkin,
@@ -827,11 +1109,12 @@ class _Toolbar extends StatelessWidget {
             ),
             _ToolButton(icon: Icons.line_weight_rounded, onTap: onPickBrushSize),
             _ToolButton(
-              icon: Icons.layers_outlined,
+              icon: Icons.blur_on_rounded,
               selected: onionSkinEnabled,
               onTap: onToggleOnionSkin,
               onLongPress: onPickOnionOpacity,
             ),
+            _ToolButton(icon: Icons.layers_rounded, onTap: onOpenLayers),
             _ToolButton(icon: Icons.undo_rounded, onTap: canUndo ? onUndo : null),
             _ToolButton(icon: Icons.redo_rounded, onTap: canRedo ? onRedo : null),
             _ToolButton(icon: Icons.delete_sweep_outlined, onTap: onClear),
@@ -911,16 +1194,16 @@ class _ToolButton extends StatelessWidget {
 /// moves the drawn content within a fixed, clipped viewport, rather than
 /// also carrying along the drawing canvas's own internal zoom/clip layers.
 class _PlaybackPreview extends StatelessWidget {
-  final AnimFrame frame;
+  final List<Stroke> strokes;
   final CameraState? camera;
 
-  const _PlaybackPreview({required this.frame, this.camera});
+  const _PlaybackPreview({required this.strokes, this.camera});
 
   @override
   Widget build(BuildContext context) {
     final artwork = Container(
       color: Colors.white,
-      child: CustomPaint(painter: FramePainter(strokes: frame.strokes)),
+      child: CustomPaint(painter: FramePainter(strokes: strokes)),
     );
 
     if (camera == null) return ClipRect(child: artwork);

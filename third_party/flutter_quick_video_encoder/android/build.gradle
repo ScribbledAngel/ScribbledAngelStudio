@@ -1,0 +1,30 @@
+group 'com.lib.flutter_quick_video_encoder'
+version '1.0'
+
+apply plugin: 'com.android.library'
+
+android {
+    // Forked locally (see third_party/README.md) purely to bump this from
+    // the upstream package's 33 - too low for transitive androidx deps
+    // (fragment/activity/lifecycle/core etc.) pulled in by other plugins in
+    // this build, which require 34+.
+    compileSdkVersion 36
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    defaultConfig {
+        minSdkVersion 19
+    }
+
+    gradle.projectsEvaluated {
+        tasks.withType(JavaCompile) {
+            options.compilerArgs << "-Xlint:deprecation"
+            options.compilerArgs << "-Xlint:unchecked"
+        }
+    }
+
+    namespace 'com.lib.flutter_quick_video_encoder'
+}

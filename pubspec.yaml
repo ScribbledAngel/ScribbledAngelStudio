@@ -17,6 +17,9 @@ dependencies:
   record: ^7.1.1
   just_audio: ^0.9.42
   file_picker: ^13.1.0
+  flutter_quick_video_encoder:
+    path: third_party/flutter_quick_video_encoder
+  share_plus: ^13.3.1
 
 dev_dependencies:
   flutter_test:

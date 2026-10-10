@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/camera_state.dart';
-import '../models/frame.dart';
 import '../models/shot.dart';
+import '../models/stroke.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import '../widgets/frame_painter.dart';
@@ -90,9 +90,9 @@ class _CameraEditorScreenState extends State<CameraEditorScreen> {
       return const Scaffold(body: Center(child: Text('Shot not found')));
     }
 
-    final AnimFrame? referenceFrame = shot.frames.isNotEmpty
-        ? (_editingStart ? shot.frames.first : shot.frames.last)
-        : (shot.storyboardFrame.strokes.isNotEmpty ? shot.storyboardFrame : null);
+    final List<Stroke> referenceStrokes = shot.frameCount > 0
+        ? shot.compositeStrokesAt(_editingStart ? 0 : shot.frameCount - 1)
+        : shot.storyboardFrame.strokes;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -145,11 +145,11 @@ class _CameraEditorScreenState extends State<CameraEditorScreen> {
                                 ..translate(_active.x * viewSize.width, _active.y * viewSize.height)
                                 ..rotateZ(_active.rotation)
                                 ..scale(_active.zoom),
-                              child: referenceFrame == null
+                              child: referenceStrokes.isEmpty
                                   ? const SizedBox.expand()
                                   : CustomPaint(
                                       size: viewSize,
-                                      painter: FramePainter(strokes: referenceFrame.strokes),
+                                      painter: FramePainter(strokes: referenceStrokes),
                                     ),
                             ),
                           );
