@@ -3,6 +3,7 @@ import 'camera_state.dart';
 import 'export_checklist.dart';
 import 'frame.dart';
 import 'layer.dart';
+import 'layer_frame_content.dart';
 import 'stroke.dart';
 
 enum ShotStatus { notStarted, inProgress, complete }
@@ -124,6 +125,42 @@ class Shot {
   }
 
   bool get hasAnyStrokes => layers.any((l) => l.frames.any((f) => f.strokes.isNotEmpty));
+
+  /// Every visible layer's content at [index] (reference layers included) -
+  /// used by the live editor, onion skin and thumbnails, where seeing a
+  /// drawing guide is the whole point.
+  List<LayerFrameContent> editorLayerContentsAt(int index, {String? excludeLayerId}) {
+    final result = <LayerFrameContent>[];
+    for (final layer in layers) {
+      if (layer.id == excludeLayerId) continue;
+      if (!layer.visible || index < 0 || index >= layer.frames.length) continue;
+      final frame = layer.frames[index];
+      result.add(LayerFrameContent(strokes: frame.strokes, imagePath: frame.imagePath, opacity: layer.opacity));
+    }
+    return result;
+  }
+
+  /// Only visible Render-type layers' content at [index] - what actually
+  /// goes into the exported video. Reference layers never appear here,
+  /// regardless of their editor visibility.
+  List<LayerFrameContent> exportLayerContentsAt(int index) {
+    final result = <LayerFrameContent>[];
+    for (final layer in layers) {
+      if (layer.type != LayerType.render || !layer.visible) continue;
+      if (index < 0 || index >= layer.frames.length) continue;
+      final frame = layer.frames[index];
+      result.add(LayerFrameContent(strokes: frame.strokes, imagePath: frame.imagePath, opacity: layer.opacity));
+    }
+    return result;
+  }
+
+  /// Whether there's anything a Render layer would actually put on screen -
+  /// used to warn before producing a silently blank export.
+  bool get hasExportableContent => layers.any(
+        (l) =>
+            l.type == LayerType.render &&
+            l.frames.any((f) => f.strokes.isNotEmpty || f.imagePath != null),
+      );
 
   Map<String, dynamic> toJson() => {
         'id': id,

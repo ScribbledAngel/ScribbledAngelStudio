@@ -20,11 +20,15 @@ dependencies:
   flutter_quick_video_encoder:
     path: third_party/flutter_quick_video_encoder
   share_plus: ^13.3.1
+  video_thumbnail:
+    path: third_party/video_thumbnail
+  video_player: ^2.9.2
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^4.0.0
+  path_provider_platform_interface: ^2.1.2
 
 flutter:
   uses-material-design: true

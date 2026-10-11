@@ -1,0 +1,25 @@
+group 'xyz.justsoft.video_thumbnail'
+version '1.0-SNAPSHOT'
+
+// Forked locally (see third_party/README.md). The upstream build.gradle
+// declared its own `buildscript` classpath (AGP 4.1.0, resolved from the
+// now-dead `jcenter()`) and its own `rootProject.allprojects` repositories
+// block - both unnecessary and risky now that AGP is already provided by
+// the root project's own `pluginManagement` in settings.gradle.kts, and
+// jcenter() no longer serves artifacts at all. Also bumped compileSdk from
+// 33 (too low for other plugins' transitive androidx dependencies) to 36.
+
+apply plugin: 'com.android.library'
+
+android {
+    compileSdkVersion 36
+    namespace 'xyz.justsoft.video_thumbnail'
+
+    defaultConfig {
+        minSdkVersion 16
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+    lintOptions {
+        disable 'InvalidPackage'
+    }
+}

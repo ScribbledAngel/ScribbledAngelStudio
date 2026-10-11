@@ -23,6 +23,12 @@ class AppData {
 class StorageService {
   static const _fileName = 'scribbled_angel_studio_data.json';
 
+  // Chains every save after the previous one, so two calls racing (e.g. two
+  // AppState mutations firing in quick succession) can't both try to
+  // write/rename the same shared temp file at once - one would fail with
+  // "No such file or directory" when the other already renamed it away.
+  Future<void> _saveQueue = Future.value();
+
   Future<File> _dataFile() async {
     final dir = await getApplicationDocumentsDirectory();
     return File('${dir.path}/$_fileName');
@@ -59,13 +65,22 @@ class StorageService {
     }
   }
 
-  Future<void> save(List<Project> projects, Progress progress) async {
-    final file = await _dataFile();
-    final tempFile = File('${file.path}.tmp');
+  Future<void> save(List<Project> projects, Progress progress) {
+    // Snapshot the JSON now (synchronously), so this call captures the data
+    // as it is at the moment it's invoked - not whatever it's become by the
+    // time its turn in the queue arrives.
     final json = jsonEncode({
       'projects': projects.map((p) => p.toJson()).toList(),
       'progress': progress.toJson(),
     });
+    final next = _saveQueue.then((_) => _writeToDisk(json));
+    _saveQueue = next.catchError((_) {});
+    return next;
+  }
+
+  Future<void> _writeToDisk(String json) async {
+    final file = await _dataFile();
+    final tempFile = File('${file.path}.tmp');
     await tempFile.writeAsString(json, flush: true);
     await tempFile.rename(file.path);
   }

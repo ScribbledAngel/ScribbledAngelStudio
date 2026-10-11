@@ -89,6 +89,12 @@ class _ExportScreenState extends State<ExportScreen> {
         _isExporting = false;
         _exportedPath = path;
       });
+    } on NoExportableContentException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isExporting = false;
+        _error = e.toString();
+      });
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -189,6 +195,28 @@ class _ExportScreenState extends State<ExportScreen> {
                 .updateExportChecklist(widget.projectId, widget.episodeId, widget.shotId, subtitles: v),
           ),
           const SizedBox(height: 24),
+          if (!shot.hasExportableContent)
+            Container(
+              padding: const EdgeInsets.all(12),
+              margin: const EdgeInsets.only(bottom: 12),
+              decoration: BoxDecoration(
+                color: AppColors.warning.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.warning_amber_rounded, color: AppColors.warning),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'No exportable artwork yet - every layer is empty or marked as a reference layer. '
+                      'Draw on a Render layer, or switch one to Render, before exporting.',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           if (_error != null)
             Padding(
               padding: const EdgeInsets.only(bottom: 12),
@@ -203,7 +231,7 @@ class _ExportScreenState extends State<ExportScreen> {
             ElevatedButton.icon(
               icon: const Icon(Icons.movie_creation_outlined),
               label: const Text('Export video'),
-              onPressed: shot.frameCount == 0 ? null : () => _runExport(shot),
+              onPressed: shot.hasExportableContent ? () => _runExport(shot) : null,
             ),
           ],
           if (_exportedPath != null) ...[

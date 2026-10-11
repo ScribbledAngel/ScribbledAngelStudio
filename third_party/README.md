@@ -18,3 +18,16 @@ the local copy's `android/build.gradle` instead.
 
 If a future pub.dev release of `flutter_quick_video_encoder` fixes this,
 switch back to a normal version dependency and delete this folder.
+
+## video_thumbnail
+
+Forked from v0.5.6 (the latest available). Same `compileSdkVersion 33`
+problem as above, bumped to 36. Also removed its own nested `buildscript`
+block (which pinned AGP 4.1.0 and pulled from the now-dead `jcenter()`
+repository) and its own `rootProject.allprojects` repositories block -
+both unnecessary now that AGP and repositories are already provided by the
+root project's `pluginManagement`/`allprojects` setup, and `jcenter()`
+doesn't serve artifacts anymore regardless.
+
+If a future pub.dev release fixes this, switch back to a normal version
+dependency and delete this folder.

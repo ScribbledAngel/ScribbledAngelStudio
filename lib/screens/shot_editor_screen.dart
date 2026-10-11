@@ -1,13 +1,16 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
 
 import '../data/audio_service.dart';
+import '../data/reference_asset_service.dart';
 import '../models/audio_clip.dart';
 import '../models/camera_state.dart';
 import '../models/layer.dart';
+import '../models/layer_frame_content.dart';
 import '../models/shot.dart';
 import '../models/stroke.dart';
 import '../state/app_state.dart';
@@ -18,6 +21,7 @@ import '../widgets/prompt_dialog.dart';
 import '../widgets/timeline_strip.dart';
 import 'camera_editor_screen.dart';
 import 'export_screen.dart';
+import 'video_import_screen.dart';
 
 const _palette = <Color>[
   Colors.black,
@@ -54,6 +58,8 @@ class ShotEditorScreen extends StatefulWidget {
 class _ShotEditorScreenState extends State<ShotEditorScreen> {
   int _currentFrameIndex = 0;
   String? _activeLayerId;
+  bool _recordingCanvasSize = false;
+  bool _isPreloadingPlayback = false;
   DrawTool _tool = DrawTool.pencil;
   Color _color = Colors.black;
   double _brushSize = 6;
@@ -140,13 +146,41 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
     }
   }
 
-  void _togglePlayback(Shot shot) {
+  /// Decodes every reference image used anywhere in the shot into Flutter's
+  /// image cache before playback starts. Without this, each frame change
+  /// during playback asks `Image.file` to decode a brand-new file from disk
+  /// on the spot, which doesn't complete instantly - the gap shows as a
+  /// flash of whatever's behind it (black, here) between frames.
+  Future<void> _precacheReferenceImages(Shot shot) async {
+    final paths = <String>{};
+    for (final layer in shot.layers) {
+      for (final frame in layer.frames) {
+        final path = frame.imagePath;
+        if (path != null) paths.add(path);
+      }
+    }
+    if (paths.isEmpty || !mounted) return;
+    final referenceAssets = ReferenceAssetService();
+    await Future.wait(
+      paths.map(
+        (p) => precacheImage(FileImage(File(referenceAssets.fullPathFor(p))), context).catchError((_) {}),
+      ),
+    );
+  }
+
+  Future<void> _togglePlayback(Shot shot) async {
     if (_isPlaying) {
       _stopPlayback();
       return;
     }
-    if (shot.frameCount < 2) return;
-    setState(() => _isPlaying = true);
+    if (shot.frameCount < 2 || _isPreloadingPlayback) return;
+    setState(() => _isPreloadingPlayback = true);
+    await _precacheReferenceImages(shot);
+    if (!mounted) return;
+    setState(() {
+      _isPreloadingPlayback = false;
+      _isPlaying = true;
+    });
     final clip = shot.audioClip;
     if (clip != null) _playAudioFromStart(clip);
     final frameMs = 1000 / shot.fps;
@@ -676,6 +710,46 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
     _selectLayer(layer.id);
   }
 
+  Future<LayerType?> _askLayerType({required String title}) {
+    return showDialog<LayerType>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(title),
+        content: const Text(
+          'Reference: visible while you draw, as a guide, but never appears in the exported video.\n\n'
+          'Render: included in the final export, like any drawn layer.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(LayerType.reference),
+            child: const Text('Reference'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(LayerType.render),
+            child: const Text('Render'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _addImageLayer() async {
+    final imagePath = await ReferenceAssetService().importImage();
+    if (imagePath == null || !mounted) return;
+    final type = await _askLayerType(title: 'Use this image as…');
+    if (type == null || !mounted) return;
+    final layer = await _appState.addLayer(
+      widget.projectId,
+      widget.episodeId,
+      widget.shotId,
+      name: type == LayerType.reference ? 'Image Reference' : 'Image',
+      type: type,
+      imagePath: imagePath,
+    );
+    if (layer == null || !mounted) return;
+    _selectLayer(layer.id);
+  }
+
   Future<void> _renameLayer(Layer layer) async {
     final result = await showPromptDialog(
       context,
@@ -722,6 +796,31 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
                         const Text('Layers', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                         const Spacer(),
                         TextButton.icon(
+                          icon: const Icon(Icons.videocam_outlined, size: 18),
+                          label: const Text('Video'),
+                          onPressed: () async {
+                            Navigator.of(sheetContext).pop();
+                            await Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => VideoImportScreen(
+                                  projectId: widget.projectId,
+                                  episodeId: widget.episodeId,
+                                  shotId: widget.shotId,
+                                ),
+                              ),
+                            );
+                            if (mounted) _openLayerPanel();
+                          },
+                        ),
+                        TextButton.icon(
+                          icon: const Icon(Icons.image_outlined, size: 18),
+                          label: const Text('Image'),
+                          onPressed: () async {
+                            await _addImageLayer();
+                            setSheetState(() {});
+                          },
+                        ),
+                        TextButton.icon(
                           icon: const Icon(Icons.add_rounded, size: 18),
                           label: const Text('Add'),
                           onPressed: () async {
@@ -741,88 +840,178 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
                         final layer = layersTopFirst[displayIndex];
                         final isActive = layer.id == _activeLayerId;
                         final realIndex = shot.layers.length - 1 - displayIndex;
+                        final isReference = layer.type == LayerType.reference;
                         return Padding(
                           padding: const EdgeInsets.only(bottom: 6),
                           child: Material(
                             color: isActive ? AppColors.accent.withOpacity(0.15) : AppColors.surfaceHigh,
                             borderRadius: BorderRadius.circular(12),
                             clipBehavior: Clip.antiAlias,
-                            child: ListTile(
-                            onTap: () {
-                              _selectLayer(layer.id);
-                              setSheetState(() {});
-                            },
-                            leading: IconButton(
-                              icon: Icon(
-                                layer.visible ? Icons.visibility_rounded : Icons.visibility_off_outlined,
-                                color: layer.visible ? AppColors.textPrimary : AppColors.textSecondary,
-                              ),
-                              onPressed: () async {
-                                await _appState.toggleLayerVisibility(
-                                  widget.projectId,
-                                  widget.episodeId,
-                                  widget.shotId,
-                                  layer.id,
-                                );
+                            child: InkWell(
+                              onTap: () {
+                                _selectLayer(layer.id);
                                 setSheetState(() {});
                               },
-                            ),
-                            title: Text(
-                              layer.name,
-                              style: TextStyle(
-                                fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
-                                color: isActive ? AppColors.accent : AppColors.textPrimary,
+                              onLongPress: () async {
+                                await _renameLayer(layer);
+                                setSheetState(() {});
+                              },
+                              child: Padding(
+                                padding: const EdgeInsets.fromLTRB(4, 6, 8, 6),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        IconButton(
+                                          icon: Icon(
+                                            layer.visible ? Icons.visibility_rounded : Icons.visibility_off_outlined,
+                                            color: layer.visible ? AppColors.textPrimary : AppColors.textSecondary,
+                                          ),
+                                          onPressed: () async {
+                                            await _appState.toggleLayerVisibility(
+                                              widget.projectId,
+                                              widget.episodeId,
+                                              widget.shotId,
+                                              layer.id,
+                                            );
+                                            setSheetState(() {});
+                                          },
+                                        ),
+                                        Expanded(
+                                          child: Text(
+                                            layer.name,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: TextStyle(
+                                              fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
+                                              color: isActive ? AppColors.accent : AppColors.textPrimary,
+                                            ),
+                                          ),
+                                        ),
+                                        GestureDetector(
+                                          onTap: () async {
+                                            await _appState.setLayerType(
+                                              widget.projectId,
+                                              widget.episodeId,
+                                              widget.shotId,
+                                              layer.id,
+                                              isReference ? LayerType.render : LayerType.reference,
+                                            );
+                                            setSheetState(() {});
+                                          },
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                                            decoration: BoxDecoration(
+                                              color: (isReference ? AppColors.warning : AppColors.success)
+                                                  .withOpacity(0.18),
+                                              borderRadius: BorderRadius.circular(8),
+                                            ),
+                                            child: Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                Icon(
+                                                  isReference ? Icons.visibility_outlined : Icons.movie_filter_outlined,
+                                                  size: 13,
+                                                  color: isReference ? AppColors.warning : AppColors.success,
+                                                ),
+                                                const SizedBox(width: 4),
+                                                Text(
+                                                  isReference ? 'Reference' : 'Render',
+                                                  style: TextStyle(
+                                                    fontSize: 11,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: isReference ? AppColors.warning : AppColors.success,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                        PopupMenuButton<String>(
+                                          icon: const Icon(Icons.more_vert_rounded, size: 20),
+                                          onSelected: (value) async {
+                                            if (value == 'up') {
+                                              await _appState.reorderLayers(
+                                                widget.projectId,
+                                                widget.episodeId,
+                                                widget.shotId,
+                                                realIndex,
+                                                realIndex + 2,
+                                              );
+                                            } else if (value == 'down') {
+                                              await _appState.reorderLayers(
+                                                widget.projectId,
+                                                widget.episodeId,
+                                                widget.shotId,
+                                                realIndex,
+                                                realIndex - 1,
+                                              );
+                                            } else if (value == 'rename') {
+                                              await _renameLayer(layer);
+                                            } else if (value == 'delete') {
+                                              await _deleteLayer(layer);
+                                            }
+                                            setSheetState(() {});
+                                          },
+                                          itemBuilder: (_) => [
+                                            PopupMenuItem(
+                                              value: 'up',
+                                              enabled: realIndex < shot.layers.length - 1,
+                                              child: const Text('Move up'),
+                                            ),
+                                            PopupMenuItem(
+                                              value: 'down',
+                                              enabled: realIndex > 0,
+                                              child: const Text('Move down'),
+                                            ),
+                                            const PopupMenuItem(value: 'rename', child: Text('Rename')),
+                                            PopupMenuItem(
+                                              value: 'delete',
+                                              enabled: shot.layers.length > 1,
+                                              child: const Text('Delete', style: TextStyle(color: AppColors.danger)),
+                                            ),
+                                          ],
+                                        ),
+                                      ],
+                                    ),
+                                    if (layer.videoSource != null)
+                                      Padding(
+                                        padding: const EdgeInsets.only(left: 44, bottom: 4),
+                                        child: Text(
+                                          'Video · ${layer.videoSource!.snippetStart.toStringAsFixed(1)}–'
+                                          '${layer.videoSource!.snippetEnd.toStringAsFixed(1)}s · '
+                                          '${layer.videoSource!.extractionFps.toStringAsFixed(0)} fps'
+                                          '${layer.videoSource!.audioFileName != null ? ' · with audio' : ''}',
+                                          style: const TextStyle(color: AppColors.textSecondary, fontSize: 11),
+                                        ),
+                                      ),
+                                    Row(
+                                      children: [
+                                        const SizedBox(width: 12),
+                                        const Icon(Icons.opacity_rounded, size: 14, color: AppColors.textSecondary),
+                                        Expanded(
+                                          child: Slider(
+                                            min: 0.1,
+                                            max: 1.0,
+                                            value: layer.opacity,
+                                            onChanged: (value) {
+                                              setSheetState(() {});
+                                              _appState.setLayerOpacity(
+                                                widget.projectId,
+                                                widget.episodeId,
+                                                widget.shotId,
+                                                layer.id,
+                                                value,
+                                              );
+                                            },
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
-                            onLongPress: () async {
-                              await _renameLayer(layer);
-                              setSheetState(() {});
-                            },
-                            trailing: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                IconButton(
-                                  icon: const Icon(Icons.arrow_upward_rounded, size: 18),
-                                  onPressed: realIndex >= shot.layers.length - 1
-                                      ? null
-                                      : () async {
-                                          await _appState.reorderLayers(
-                                            widget.projectId,
-                                            widget.episodeId,
-                                            widget.shotId,
-                                            realIndex,
-                                            realIndex + 2,
-                                          );
-                                          setSheetState(() {});
-                                        },
-                                ),
-                                IconButton(
-                                  icon: const Icon(Icons.arrow_downward_rounded, size: 18),
-                                  onPressed: realIndex <= 0
-                                      ? null
-                                      : () async {
-                                          await _appState.reorderLayers(
-                                            widget.projectId,
-                                            widget.episodeId,
-                                            widget.shotId,
-                                            realIndex,
-                                            realIndex - 1,
-                                          );
-                                          setSheetState(() {});
-                                        },
-                                ),
-                                IconButton(
-                                  icon: const Icon(Icons.delete_outline_rounded, color: AppColors.danger, size: 18),
-                                  onPressed: shot.layers.length <= 1
-                                      ? null
-                                      : () async {
-                                          await _deleteLayer(layer);
-                                          setSheetState(() {});
-                                        },
-                                ),
-                              ],
-                            ),
-                          ),
                           ),
                         );
                       },
@@ -855,8 +1044,8 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
     final hasFrames = shot.frameCount > 0 && activeLayer != null;
     final activeFrame = hasFrames ? activeLayer.frames[frameIndex] : null;
 
-    final layersBelow = <List<Stroke>>[];
-    final layersAbove = <List<Stroke>>[];
+    final layersBelow = <LayerFrameContent>[];
+    final layersAbove = <LayerFrameContent>[];
     var passedActive = false;
     for (final layer in shot.layers) {
       if (layer.id == activeLayer?.id) {
@@ -864,8 +1053,9 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
         continue;
       }
       if (!layer.visible || frameIndex >= layer.frames.length) continue;
-      final strokes = layer.frames[frameIndex].strokes;
-      (passedActive ? layersAbove : layersBelow).add(strokes);
+      final frame = layer.frames[frameIndex];
+      final content = LayerFrameContent(strokes: frame.strokes, imagePath: frame.imagePath, opacity: layer.opacity);
+      (passedActive ? layersAbove : layersBelow).add(content);
     }
 
     return Scaffold(
@@ -879,8 +1069,14 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
         actions: [
           IconButton(
             tooltip: _isPlaying ? 'Pause' : 'Play',
-            icon: Icon(_isPlaying ? Icons.pause_circle_filled_rounded : Icons.play_circle_fill_rounded, size: 32),
-            onPressed: shot.frameCount < 2 ? null : () => _togglePlayback(shot),
+            icon: _isPreloadingPlayback
+                ? const SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(strokeWidth: 2.5),
+                  )
+                : Icon(_isPlaying ? Icons.pause_circle_filled_rounded : Icons.play_circle_fill_rounded, size: 32),
+            onPressed: shot.frameCount < 2 || _isPreloadingPlayback ? null : () => _togglePlayback(shot),
           ),
           PopupMenuButton<String>(
             onSelected: (value) {
@@ -920,9 +1116,11 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
                       ? const SizedBox.shrink()
                       : LayoutBuilder(
                           builder: (context, constraints) {
-                            if (shot.canvasWidthPx == null) {
+                            if (shot.canvasWidthPx == null && !_recordingCanvasSize) {
+                              _recordingCanvasSize = true;
                               final size = constraints.biggest;
                               WidgetsBinding.instance.addPostFrameCallback((_) {
+                                _recordingCanvasSize = false;
                                 if (!mounted) return;
                                 _appState.recordCanvasSizeIfUnset(
                                   widget.projectId,
@@ -935,7 +1133,7 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
                             }
                             return _isPlaying
                                 ? _PlaybackPreview(
-                                    strokes: shot.compositeStrokesAt(frameIndex),
+                                    contents: shot.editorLayerContentsAt(frameIndex),
                                     camera: shot.cameraMoveEnabled
                                         ? CameraState.lerp(
                                             shot.cameraStart,
@@ -960,6 +1158,8 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
                                     layersBelow: layersBelow,
                                     layersAbove: layersAbove,
                                     showActiveLayer: activeLayer!.visible,
+                                    activeOpacity: activeLayer.opacity,
+                                    activeImagePath: activeFrame.imagePath,
                                   );
                           },
                         ),
@@ -1194,16 +1394,41 @@ class _ToolButton extends StatelessWidget {
 /// moves the drawn content within a fixed, clipped viewport, rather than
 /// also carrying along the drawing canvas's own internal zoom/clip layers.
 class _PlaybackPreview extends StatelessWidget {
-  final List<Stroke> strokes;
+  final List<LayerFrameContent> contents;
   final CameraState? camera;
 
-  const _PlaybackPreview({required this.strokes, this.camera});
+  const _PlaybackPreview({required this.contents, this.camera});
 
   @override
   Widget build(BuildContext context) {
     final artwork = Container(
       color: Colors.white,
-      child: CustomPaint(painter: FramePainter(strokes: strokes)),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          for (final content in contents)
+            Stack(
+              fit: StackFit.expand,
+              children: [
+                if (content.imagePath != null)
+                  Opacity(
+                    opacity: content.opacity,
+                    child: Image.file(
+                      File(ReferenceAssetService().fullPathFor(content.imagePath!)),
+                      fit: BoxFit.cover,
+                      // Without this, Image briefly shows nothing (revealing
+                      // the white backdrop) every time the file changes,
+                      // even though it's precached - the old frame should
+                      // stay up until the new one is ready to paint.
+                      gaplessPlayback: true,
+                      errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
+                    ),
+                  ),
+                CustomPaint(painter: FramePainter(strokes: content.strokes, opacity: content.opacity)),
+              ],
+            ),
+        ],
+      ),
     );
 
     if (camera == null) return ClipRect(child: artwork);

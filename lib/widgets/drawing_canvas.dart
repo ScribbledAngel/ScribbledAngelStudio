@@ -1,6 +1,10 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 
+import '../data/reference_asset_service.dart';
+import '../models/layer_frame_content.dart';
 import '../models/stroke.dart';
 import 'frame_painter.dart';
 
@@ -37,13 +41,18 @@ class DrawingCanvas extends StatefulWidget {
   /// correct stacking position. Each is kept as its own paint layer (not
   /// merged into one list) so an eraser stroke on one layer can't bleed
   /// into another's content.
-  final List<List<Stroke>> layersBelow;
-  final List<List<Stroke>> layersAbove;
+  final List<LayerFrameContent> layersBelow;
+  final List<LayerFrameContent> layersAbove;
 
   /// Whether the layer being drawn on is itself visible. Drawing still
   /// works either way (so toggling visibility back on reveals what you
   /// drew), but when false its strokes aren't painted.
   final bool showActiveLayer;
+
+  /// The active layer's own opacity and reference image (e.g. drawing
+  /// directly on top of a reference frame).
+  final double activeOpacity;
+  final String? activeImagePath;
 
   const DrawingCanvas({
     super.key,
@@ -58,6 +67,8 @@ class DrawingCanvas extends StatefulWidget {
     this.layersBelow = const [],
     this.layersAbove = const [],
     this.showActiveLayer = true,
+    this.activeOpacity = 1.0,
+    this.activeImagePath,
   });
 
   @override
@@ -225,6 +236,32 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
     _zoomAnchorArtworkPoint = null;
   }
 
+  Widget _buildLayerContent(
+    List<Stroke> strokes,
+    double opacity,
+    String? imagePath, {
+    bool foreground = false,
+  }) {
+    if (imagePath == null && strokes.isEmpty && !foreground) return const SizedBox.shrink();
+    final painter = FramePainter(strokes: strokes, opacity: opacity);
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        if (imagePath != null)
+          Opacity(
+            opacity: opacity,
+            child: Image.file(
+              File(ReferenceAssetService().fullPathFor(imagePath)),
+              fit: BoxFit.cover,
+              gaplessPlayback: true,
+              errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
+            ),
+          ),
+        foreground ? CustomPaint(foregroundPainter: painter) : CustomPaint(painter: painter),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isZoomed = _viewScale > 1.01;
@@ -266,11 +303,12 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
                             tintColor: Colors.red,
                           ),
                         ),
-                      for (final layerStrokes in widget.layersBelow)
-                        if (layerStrokes.isNotEmpty) CustomPaint(painter: FramePainter(strokes: layerStrokes)),
-                      if (widget.showActiveLayer) CustomPaint(foregroundPainter: FramePainter(strokes: _strokes)),
-                      for (final layerStrokes in widget.layersAbove)
-                        if (layerStrokes.isNotEmpty) CustomPaint(painter: FramePainter(strokes: layerStrokes)),
+                      for (final content in widget.layersBelow)
+                        _buildLayerContent(content.strokes, content.opacity, content.imagePath),
+                      if (widget.showActiveLayer)
+                        _buildLayerContent(_strokes, widget.activeOpacity, widget.activeImagePath, foreground: true),
+                      for (final content in widget.layersAbove)
+                        _buildLayerContent(content.strokes, content.opacity, content.imagePath),
                     ],
                   ),
                 ),

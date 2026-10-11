@@ -9,6 +9,8 @@ export 'camera_state.dart';
 export 'audio_clip.dart';
 export 'export_checklist.dart';
 export 'layer.dart';
+export 'layer_frame_content.dart';
+export 'video_reference_source.dart';
 
 class Project {
   String id;

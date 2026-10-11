@@ -1,9 +1,12 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../data/reference_asset_service.dart';
 import '../models/camera_state.dart';
+import '../models/layer_frame_content.dart';
 import '../models/shot.dart';
-import '../models/stroke.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import '../widgets/frame_painter.dart';
@@ -90,9 +93,10 @@ class _CameraEditorScreenState extends State<CameraEditorScreen> {
       return const Scaffold(body: Center(child: Text('Shot not found')));
     }
 
-    final List<Stroke> referenceStrokes = shot.frameCount > 0
-        ? shot.compositeStrokesAt(_editingStart ? 0 : shot.frameCount - 1)
-        : shot.storyboardFrame.strokes;
+    final List<LayerFrameContent> referenceContents = shot.frameCount > 0
+        ? shot.editorLayerContentsAt(_editingStart ? 0 : shot.frameCount - 1)
+        : [LayerFrameContent(strokes: shot.storyboardFrame.strokes)];
+    final hasReferenceContent = referenceContents.any((c) => c.strokes.isNotEmpty || c.imagePath != null);
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -145,11 +149,33 @@ class _CameraEditorScreenState extends State<CameraEditorScreen> {
                                 ..translate(_active.x * viewSize.width, _active.y * viewSize.height)
                                 ..rotateZ(_active.rotation)
                                 ..scale(_active.zoom),
-                              child: referenceStrokes.isEmpty
+                              child: !hasReferenceContent
                                   ? const SizedBox.expand()
-                                  : CustomPaint(
-                                      size: viewSize,
-                                      painter: FramePainter(strokes: referenceStrokes),
+                                  : Stack(
+                                      fit: StackFit.expand,
+                                      children: [
+                                        for (final content in referenceContents)
+                                          Stack(
+                                            fit: StackFit.expand,
+                                            children: [
+                                              if (content.imagePath != null)
+                                                Opacity(
+                                                  opacity: content.opacity,
+                                                  child: Image.file(
+                                                    File(ReferenceAssetService().fullPathFor(content.imagePath!)),
+                                                    fit: BoxFit.cover,
+                                                    gaplessPlayback: true,
+                                                    errorBuilder: (context, error, stackTrace) =>
+                                                        const SizedBox.shrink(),
+                                                  ),
+                                                ),
+                                              CustomPaint(
+                                                size: viewSize,
+                                                painter: FramePainter(strokes: content.strokes, opacity: content.opacity),
+                                              ),
+                                            ],
+                                          ),
+                                      ],
                                     ),
                             ),
                           );

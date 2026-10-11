@@ -21,9 +21,16 @@ class AppState extends ChangeNotifier {
   Set<String> get unlockedAchievements => computeUnlockedAchievements(projects, progress.everExported);
 
   Future<void> load() async {
-    final data = await _storage.load();
-    projects = data.projects;
-    progress = data.progress;
+    try {
+      final data = await _storage.load();
+      projects = data.projects;
+      progress = data.progress;
+    } catch (_) {
+      // Fall back to an empty (but usable) app rather than getting stuck on
+      // the loading screen forever if storage is ever unreadable.
+      projects = [];
+      progress = Progress();
+    }
     isLoading = false;
     notifyListeners();
   }
@@ -319,6 +326,8 @@ class AppState extends ChangeNotifier {
     String episodeId,
     String shotId, {
     String? name,
+    LayerType type = LayerType.render,
+    String? imagePath,
   }) async {
     final shot = getShot(projectId, episodeId, shotId);
     if (shot == null) return null;
@@ -326,11 +335,90 @@ class AppState extends ChangeNotifier {
     final layer = Layer(
       id: _uuid.v4(),
       name: name ?? 'Layer ${shot.layers.length + 1}',
-      frames: List.generate(frameCount, (_) => AnimFrame(id: _uuid.v4())),
+      type: type,
+      frames: List.generate(frameCount, (_) => AnimFrame(id: _uuid.v4(), imagePath: imagePath)),
     );
     shot.layers.add(layer);
     await _commit();
     return layer;
+  }
+
+  /// Adds a Reference layer built from an extracted video snippet - one
+  /// image path per extracted frame. If the snippet produced more frames
+  /// than the shot currently has, every existing layer is extended (holding
+  /// its own last frame forward, same as a normal "add frame" does) so the
+  /// whole shot can be traced over the full reference clip. If the shot is
+  /// already longer, the new layer holds its own last extracted frame for
+  /// the remaining slots.
+  Future<Layer?> addVideoReferenceLayer(
+    String projectId,
+    String episodeId,
+    String shotId, {
+    required List<String> frameImagePaths,
+    required VideoReferenceSource videoSource,
+    String? name,
+  }) async {
+    final shot = getShot(projectId, episodeId, shotId);
+    if (shot == null || frameImagePaths.isEmpty) return null;
+
+    final extractedCount = frameImagePaths.length;
+    final currentCount = shot.frameCount;
+
+    if (extractedCount > currentCount) {
+      final delta = extractedCount - currentCount;
+      for (final layer in shot.layers) {
+        for (var i = 0; i < delta; i++) {
+          final held = layer.frames.isNotEmpty ? layer.frames.last.copy() : AnimFrame(id: _uuid.v4());
+          held.id = _uuid.v4();
+          layer.frames.add(held);
+        }
+      }
+    }
+
+    final targetCount = extractedCount > currentCount ? extractedCount : currentCount;
+    final newLayerFrames = <AnimFrame>[
+      for (var i = 0; i < targetCount; i++)
+        AnimFrame(id: _uuid.v4(), imagePath: i < extractedCount ? frameImagePaths[i] : frameImagePaths.last),
+    ];
+
+    final layer = Layer(
+      id: _uuid.v4(),
+      name: name ?? 'Video Reference',
+      type: LayerType.reference,
+      frames: newLayerFrames,
+      videoSource: videoSource,
+    );
+    shot.layers.add(layer);
+    await _commit();
+    return layer;
+  }
+
+  Future<void> setLayerType(
+    String projectId,
+    String episodeId,
+    String shotId,
+    String layerId,
+    LayerType type,
+  ) async {
+    final shot = getShot(projectId, episodeId, shotId);
+    final layer = shot == null ? null : _findLayer(shot, layerId);
+    if (layer == null) return;
+    layer.type = type;
+    await _commit();
+  }
+
+  Future<void> setLayerOpacity(
+    String projectId,
+    String episodeId,
+    String shotId,
+    String layerId,
+    double opacity,
+  ) async {
+    final shot = getShot(projectId, episodeId, shotId);
+    final layer = shot == null ? null : _findLayer(shot, layerId);
+    if (layer == null) return;
+    layer.opacity = opacity;
+    await _commit();
   }
 
   Future<void> deleteLayer(String projectId, String episodeId, String shotId, String layerId) async {
