@@ -54,6 +54,12 @@ class DrawingCanvas extends StatefulWidget {
   final double activeOpacity;
   final String? activeImagePath;
 
+  /// False when the active layer is a Reference layer - reference content
+  /// is a guide, never exported, so drawing onto it would silently discard
+  /// the artwork from the final video. Pinch-to-zoom/pan still works; only
+  /// starting a new stroke is blocked.
+  final bool drawingEnabled;
+
   const DrawingCanvas({
     super.key,
     required this.strokes,
@@ -69,6 +75,7 @@ class DrawingCanvas extends StatefulWidget {
     this.showActiveLayer = true,
     this.activeOpacity = 1.0,
     this.activeImagePath,
+    this.drawingEnabled = true,
   });
 
   @override
@@ -200,7 +207,7 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
 
   void _onScaleStart(ScaleStartDetails details) {
     _gestureStartScale = _viewScale;
-    if (details.pointerCount <= 1) {
+    if (details.pointerCount <= 1 && widget.drawingEnabled) {
       _isDrawingGesture = true;
       _startStroke(_toArtworkSpace(details.localFocalPoint));
     } else {

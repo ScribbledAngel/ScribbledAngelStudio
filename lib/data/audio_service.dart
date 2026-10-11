@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/services.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
@@ -10,11 +11,25 @@ import '../models/audio_clip.dart';
 
 const _uuid = Uuid();
 
+/// Raw 16-bit PCM decoded from an [AudioClip]'s file, ready for export to
+/// mux into the output video.
+class DecodedPcm {
+  final Uint8List bytes;
+  final int sampleRate;
+  final int channelCount;
+
+  DecodedPcm({required this.bytes, required this.sampleRate, required this.channelCount});
+}
+
 /// Recording, importing and probing audio clips. Files live in a private
 /// `audio/` folder inside the app's documents directory; [AudioClip] only
 /// ever stores the bare file name, never a full path.
 class AudioService {
   AudioRecorder? _recorder;
+
+  static const _pcmChannel = MethodChannel(
+    'com.scribbledangelstudio.scribbled_angel_studio/audio_extractor',
+  );
 
   Future<Directory> _audioDir() async {
     final docsDir = await getApplicationDocumentsDirectory();
@@ -87,6 +102,39 @@ class AudioService {
       return 0;
     } finally {
       await player.dispose();
+    }
+  }
+
+  /// Decodes [startSeconds]..[endSeconds] of an audio clip's file to raw
+  /// PCM, for muxing into an exported video. Returns null if there's no
+  /// audio track or decoding fails - the caller exports without audio.
+  Future<DecodedPcm?> decodePcmForExport({
+    required String fileName,
+    required double startSeconds,
+    required double endSeconds,
+  }) async {
+    final sourcePath = await fullPathFor(fileName);
+    final tempDir = await getTemporaryDirectory();
+    final outputPath = '${tempDir.path}/${_uuid.v4()}.pcm';
+    try {
+      final info = await _pcmChannel.invokeMethod<Map>('decodePcm', {
+        'sourcePath': sourcePath,
+        'outputPath': outputPath,
+        'startMs': (startSeconds * 1000).round(),
+        'endMs': (endSeconds * 1000).round(),
+      });
+      if (info == null) return null;
+      final bytes = await File(outputPath).readAsBytes();
+      return DecodedPcm(
+        bytes: bytes,
+        sampleRate: info['sampleRate'] as int,
+        channelCount: info['channelCount'] as int,
+      );
+    } catch (_) {
+      return null;
+    } finally {
+      final tempFile = File(outputPath);
+      if (await tempFile.exists()) await tempFile.delete();
     }
   }
 

@@ -7,6 +7,8 @@ import android.media.MediaMuxer
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.io.BufferedOutputStream
+import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.abs
@@ -59,6 +61,23 @@ class MainActivity : FlutterActivity() {
                 } catch (e: Exception) {
                     // No audio track, or a codec we can't decode - report an
                     // empty waveform rather than failing the whole screen.
+                    result.success(null)
+                }
+            } else if (call.method == "decodePcm") {
+                val sourcePath = call.argument<String>("sourcePath")
+                val outputPath = call.argument<String>("outputPath")
+                val startMs = call.argument<Int>("startMs")
+                val endMs = call.argument<Int>("endMs")
+                if (sourcePath == null || outputPath == null || startMs == null || endMs == null) {
+                    result.error("BAD_ARGS", "sourcePath, outputPath, startMs and endMs are all required", null)
+                    return@setMethodCallHandler
+                }
+                try {
+                    val info = decodePcm(sourcePath, outputPath, startMs.toLong(), endMs.toLong())
+                    result.success(info)
+                } catch (e: Exception) {
+                    // No audio track, or a codec we can't decode - the caller
+                    // treats a null result as "export this shot without audio".
                     result.success(null)
                 }
             } else {
@@ -230,5 +249,105 @@ class MainActivity : FlutterActivity() {
             for (i in peaks.indices) peaks[i] = peaks[i] / loudest
         }
         return peaks.toList()
+    }
+
+    /**
+     * Decodes the audio track between [startMs] and [endMs] to raw 16-bit
+     * PCM (interleaved if multi-channel) and writes it to [outputPath].
+     * Returns the decoded sample rate/channel count (map with "sampleRate"
+     * and "channelCount"), or null if there's no audio track - used by
+     * video export to mux a shot's own audio into the output file.
+     */
+    private fun decodePcm(sourcePath: String, outputPath: String, startMs: Long, endMs: Long): Map<String, Int>? {
+        val extractor = MediaExtractor()
+        extractor.setDataSource(sourcePath)
+
+        var audioTrackIndex = -1
+        var audioFormat: MediaFormat? = null
+        for (i in 0 until extractor.trackCount) {
+            val format = extractor.getTrackFormat(i)
+            val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
+            if (mime.startsWith("audio/")) {
+                audioTrackIndex = i
+                audioFormat = format
+                break
+            }
+        }
+        if (audioTrackIndex == -1 || audioFormat == null) {
+            extractor.release()
+            return null
+        }
+
+        val mime = audioFormat.getString(MediaFormat.KEY_MIME)!!
+        var sampleRate = audioFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+        var channelCount = audioFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+
+        extractor.selectTrack(audioTrackIndex)
+        val startUs = startMs * 1000
+        val endUs = endMs * 1000
+        extractor.seekTo(startUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+
+        val decoder = MediaCodec.createDecoderByType(mime)
+        decoder.configure(audioFormat, null, null, 0)
+        decoder.start()
+
+        val out = BufferedOutputStream(FileOutputStream(outputPath))
+        var sawInputEos = false
+        var sawOutputEos = false
+        var wroteAnySamples = false
+
+        try {
+            while (!sawOutputEos) {
+                if (!sawInputEos) {
+                    val inputBufferId = decoder.dequeueInputBuffer(10_000)
+                    if (inputBufferId >= 0) {
+                        val inputBuffer = decoder.getInputBuffer(inputBufferId)!!
+                        val sampleTimeUs = extractor.sampleTime
+                        if (sampleTimeUs < 0 || sampleTimeUs > endUs) {
+                            decoder.queueInputBuffer(inputBufferId, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                            sawInputEos = true
+                        } else {
+                            val sampleSize = extractor.readSampleData(inputBuffer, 0)
+                            if (sampleSize < 0) {
+                                decoder.queueInputBuffer(inputBufferId, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                sawInputEos = true
+                            } else {
+                                decoder.queueInputBuffer(inputBufferId, 0, sampleSize, sampleTimeUs, 0)
+                                extractor.advance()
+                            }
+                        }
+                    }
+                }
+
+                val bufferInfo = MediaCodec.BufferInfo()
+                val outputBufferId = decoder.dequeueOutputBuffer(bufferInfo, 10_000)
+                if (outputBufferId == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    val newFormat = decoder.outputFormat
+                    sampleRate = newFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                    channelCount = newFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                } else if (outputBufferId >= 0) {
+                    if (bufferInfo.size > 0 && bufferInfo.presentationTimeUs >= startUs) {
+                        val outputBuffer = decoder.getOutputBuffer(outputBufferId)!!
+                        outputBuffer.position(bufferInfo.offset)
+                        outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
+                        val chunk = ByteArray(bufferInfo.size)
+                        outputBuffer.get(chunk)
+                        out.write(chunk)
+                        wroteAnySamples = true
+                    }
+                    decoder.releaseOutputBuffer(outputBufferId, false)
+                    if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) sawOutputEos = true
+                }
+            }
+        } finally {
+            out.flush()
+            out.close()
+            decoder.stop()
+            decoder.release()
+            extractor.release()
+        }
+
+        if (!wroteAnySamples) return null
+        return mapOf("sampleRate" to sampleRate, "channelCount" to channelCount)
     }
 }

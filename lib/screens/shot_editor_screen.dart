@@ -1108,6 +1108,17 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
       body: SafeArea(
         child: Column(
           children: [
+            if (activeLayer != null && activeLayer.type == LayerType.reference)
+              Container(
+                width: double.infinity,
+                color: AppColors.warning.withOpacity(0.15),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                child: Text(
+                  '"${activeLayer.name}" is a Reference layer - a guide only, never exported. '
+                  'Select a Render layer to draw.',
+                  style: const TextStyle(fontSize: 11, color: AppColors.warning),
+                ),
+              ),
             Expanded(
               child: Center(
                 child: AspectRatio(
@@ -1160,6 +1171,7 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
                                     showActiveLayer: activeLayer!.visible,
                                     activeOpacity: activeLayer.opacity,
                                     activeImagePath: activeFrame.imagePath,
+                                    drawingEnabled: activeLayer.type == LayerType.render,
                                   );
                           },
                         ),

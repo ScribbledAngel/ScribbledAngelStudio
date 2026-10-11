@@ -38,6 +38,7 @@ class _ExportScreenState extends State<ExportScreen> {
   bool _isExporting = false;
   double _exportProgress = 0;
   String? _exportedPath;
+  bool _exportedAudio = false;
   String? _error;
 
   @override
@@ -74,7 +75,7 @@ class _ExportScreenState extends State<ExportScreen> {
     });
     try {
       final (width, height) = _targetSize();
-      final path = await _exportService.exportShotVideo(
+      final result = await _exportService.exportShotVideo(
         shot: shot,
         width: width,
         height: height,
@@ -87,7 +88,8 @@ class _ExportScreenState extends State<ExportScreen> {
       await context.read<AppState>().recordExport(widget.projectId, widget.episodeId, widget.shotId);
       setState(() {
         _isExporting = false;
-        _exportedPath = path;
+        _exportedPath = result.path;
+        _exportedAudio = result.audioIncluded;
       });
     } on NoExportableContentException catch (e) {
       if (!mounted) return;
@@ -152,10 +154,23 @@ class _ExportScreenState extends State<ExportScreen> {
             onSelectionChanged: _isExporting ? null : (s) => setState(() => _fpsChoice = s.first),
           ),
           const SizedBox(height: 6),
-          Text(
-            'Will export at ${width}x$height, video only (no audio track yet).',
-            style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
-          ),
+          Builder(builder: (context) {
+            final fps = _targetFps(shot);
+            final hasAudio = shot.audioClip != null && shot.audioClip!.effectiveDuration > 0;
+            final audioSupported = pickAudioSampleRate(fps) != null;
+            final String audioNote;
+            if (!hasAudio) {
+              audioNote = 'no audio set on this shot';
+            } else if (!audioSupported) {
+              audioNote = "this shot's audio won't be included - $fps fps has no exportable audio rate, try 12 or 24 fps";
+            } else {
+              audioNote = "this shot's audio will be included";
+            }
+            return Text(
+              'Will export at ${width}x$height - $audioNote.',
+              style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
+            );
+          }),
           const SizedBox(height: 24),
           const Text('Before you publish', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
           const SizedBox(height: 10),
@@ -236,6 +251,12 @@ class _ExportScreenState extends State<ExportScreen> {
           ],
           if (_exportedPath != null) ...[
             const SizedBox(height: 16),
+            Text(
+              _exportedAudio ? 'Exported with audio.' : 'Exported - video only, no audio.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
+            ),
+            const SizedBox(height: 8),
             OutlinedButton.icon(
               icon: const Icon(Icons.share_outlined),
               label: const Text('Share / Save video'),

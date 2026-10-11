@@ -55,3 +55,21 @@ this feature.
       Open a shot created before this feature existed. Its single layer
       should already show as "Render" with opacity 1.0, and exporting it
       should look identical to how it exported before.
+- [ ] **11. Reference layers can't accidentally absorb drawings.**
+      Select a Reference layer (e.g. a video-reference or still-image
+      layer). A warning banner appears above the canvas; single-finger
+      drag pans/zooms instead of drawing a stroke. Switch to a Render
+      layer - drawing works normally again.
+- [ ] **12. Exported video includes the shot's audio.**
+      Set a shot's audio (recorded, imported, or auto-set from a video
+      import), leave the frame rate at 12 or 24 fps, export. The exported
+      MP4 has an audio track, starting in sync with frame 0 (matching the
+      audio panel's trim start), at the trimmed volume. The export screen's
+      caption and the post-export message both say audio was included.
+- [ ] **12b. Audio gracefully omitted when it can't be included.**
+      Set a shot's fps to an odd value with no exportable audio rate (e.g.
+      13) via the +/- fps control, export with audio set. The export
+      screen says up front that audio won't be included and why; export
+      still succeeds, video-only, with no crash. Same for a shot with no
+      audio clip set at all (plain "no audio set on this shot" note, no
+      warning tone).
