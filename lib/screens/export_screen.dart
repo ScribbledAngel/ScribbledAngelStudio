@@ -40,6 +40,8 @@ class _ExportScreenState extends State<ExportScreen> {
   String? _exportedPath;
   bool _exportedAudio = false;
   String? _error;
+  DateTime? _exportStartedAt;
+  bool _cancelRequested = false;
 
   @override
   void initState() {
@@ -72,6 +74,8 @@ class _ExportScreenState extends State<ExportScreen> {
       _exportProgress = 0;
       _error = null;
       _exportedPath = null;
+      _exportStartedAt = DateTime.now();
+      _cancelRequested = false;
     });
     try {
       final (width, height) = _targetSize();
@@ -83,6 +87,7 @@ class _ExportScreenState extends State<ExportScreen> {
         onProgress: (p) {
           if (mounted) setState(() => _exportProgress = p);
         },
+        isCancelled: () => _cancelRequested,
       );
       if (!mounted) return;
       await context.read<AppState>().recordExport(widget.projectId, widget.episodeId, widget.shotId);
@@ -91,6 +96,9 @@ class _ExportScreenState extends State<ExportScreen> {
         _exportedPath = result.path;
         _exportedAudio = result.audioIncluded;
       });
+    } on ExportCancelledException {
+      if (!mounted) return;
+      setState(() => _isExporting = false);
     } on NoExportableContentException catch (e) {
       if (!mounted) return;
       setState(() {
@@ -104,6 +112,26 @@ class _ExportScreenState extends State<ExportScreen> {
         _error = 'Export failed: $e';
       });
     }
+  }
+
+  void _cancelExport() {
+    setState(() => _cancelRequested = true);
+  }
+
+  /// A rough ETA from elapsed time and progress so far - frame rendering
+  /// speed varies a lot by device/resolution, so this is an estimate that
+  /// settles down after the first few frames, not a precise countdown.
+  String? _estimateRemaining() {
+    final startedAt = _exportStartedAt;
+    if (startedAt == null || _exportProgress <= 0.02) return null;
+    final elapsed = DateTime.now().difference(startedAt);
+    final totalEstimate = elapsed * (1 / _exportProgress);
+    final remaining = totalEstimate - elapsed;
+    if (remaining.inSeconds < 1) return 'almost done';
+    if (remaining.inMinutes < 1) return '~${remaining.inSeconds}s left';
+    final minutes = remaining.inMinutes;
+    final seconds = remaining.inSeconds % 60;
+    return '~${minutes}m ${seconds}s left';
   }
 
   Future<void> _share(String path) async {
@@ -240,7 +268,21 @@ class _ExportScreenState extends State<ExportScreen> {
           if (_isExporting) ...[
             LinearProgressIndicator(value: _exportProgress),
             const SizedBox(height: 8),
-            Text('Rendering… ${(_exportProgress * 100).round()}%', textAlign: TextAlign.center),
+            Builder(builder: (context) {
+              final eta = _estimateRemaining();
+              final percent = '${(_exportProgress * 100).round()}%';
+              return Text(
+                _cancelRequested
+                    ? 'Cancelling…'
+                    : (eta == null ? 'Rendering… $percent' : 'Rendering… $percent - $eta'),
+                textAlign: TextAlign.center,
+              );
+            }),
+            const SizedBox(height: 8),
+            OutlinedButton(
+              onPressed: _cancelRequested ? null : _cancelExport,
+              child: const Text('Cancel'),
+            ),
             const SizedBox(height: 16),
           ] else ...[
             ElevatedButton.icon(

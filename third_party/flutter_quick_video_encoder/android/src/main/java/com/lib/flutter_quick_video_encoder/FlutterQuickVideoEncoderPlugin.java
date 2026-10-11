@@ -367,7 +367,11 @@ public class FlutterQuickVideoEncoderPlugin implements
     private void feedAudioEncoder(byte[] rawPcmArray) throws Exception {
         int offset = 0;
         while (offset < rawPcmArray.length) {
-            int inIdx = mAudioEncoder.dequeueInputBuffer(-1);
+            // A short timeout, not -1 (block forever): if the encoder's
+            // input buffers are all in flight, draining below is what frees
+            // them up again - blocking indefinitely here would just deadlock
+            // waiting for a buffer that drainEncoder() was about to release.
+            int inIdx = mAudioEncoder.dequeueInputBuffer(10000);
             if (inIdx >= 0) {
                 ByteBuffer buf = mAudioEncoder.getInputBuffer(inIdx);
                 buf.clear();
@@ -387,6 +391,15 @@ public class FlutterQuickVideoEncoderPlugin implements
 
                 offset += toWrite;
             }
+
+            // One rawPcmArray (one video frame's worth of audio) is often
+            // bigger than the codec's own input buffer, so this loop can run
+            // several times per call - without draining in between, the
+            // codec's output buffers fill up, it stops recycling input
+            // buffers to make room, and dequeueInputBuffer blocks forever.
+            // Draining every iteration keeps buffers flowing regardless of
+            // how many encoder pushes one call needs.
+            drainEncoder(mAudioEncoder, false);
         }
 
         // Increment frame index

@@ -42,6 +42,14 @@ class NoExportableContentException implements Exception {
       'This shot has no exportable artwork - every layer is empty or marked as a reference layer.';
 }
 
+/// Thrown when the user cancels an in-progress export.
+class ExportCancelledException implements Exception {
+  const ExportCancelledException();
+
+  @override
+  String toString() => 'Export cancelled.';
+}
+
 /// The result of a successful export - the output file, plus whether the
 /// shot's audio actually made it in (so the UI can say so if it didn't).
 class ExportResult {
@@ -78,6 +86,7 @@ class ExportService {
     required int height,
     required int fps,
     void Function(double progress)? onProgress,
+    bool Function()? isCancelled,
   }) async {
     if (!shot.hasExportableContent) {
       throw const NoExportableContentException();
@@ -106,43 +115,52 @@ class ExportService {
     );
 
     try {
-      final sourceWidth = shot.canvasWidthPx ?? width.toDouble();
-      final sourceHeight = shot.canvasHeightPx ?? height.toDouble();
+      try {
+        final sourceWidth = shot.canvasWidthPx ?? width.toDouble();
+        final sourceHeight = shot.canvasHeightPx ?? height.toDouble();
 
-      final imageCache = await _preloadImages(shot);
+        final imageCache = await _preloadImages(shot);
 
-      for (var i = 0; i < totalExportFrames; i++) {
-        final sourceTime = i / fps;
-        final sourceIndex = (sourceTime * shot.fps).floor().clamp(0, totalFrames - 1).toInt();
-        final contents = shot.exportLayerContentsAt(sourceIndex);
+        for (var i = 0; i < totalExportFrames; i++) {
+          if (isCancelled?.call() ?? false) {
+            throw const ExportCancelledException();
+          }
+          final sourceTime = i / fps;
+          final sourceIndex = (sourceTime * shot.fps).floor().clamp(0, totalFrames - 1).toInt();
+          final contents = shot.exportLayerContentsAt(sourceIndex);
 
-        CameraState? camera;
-        if (shot.cameraMoveEnabled && totalFrames > 1) {
-          final t = sourceIndex / (totalFrames - 1);
-          camera = CameraState.lerp(shot.cameraStart, shot.cameraEnd, t);
+          CameraState? camera;
+          if (shot.cameraMoveEnabled && totalFrames > 1) {
+            final t = sourceIndex / (totalFrames - 1);
+            camera = CameraState.lerp(shot.cameraStart, shot.cameraEnd, t);
+          }
+
+          final bytes = await _renderFrameRgba(
+            contents: contents,
+            imageCache: imageCache,
+            exportWidth: width,
+            exportHeight: height,
+            sourceWidth: sourceWidth,
+            sourceHeight: sourceHeight,
+            camera: camera,
+          );
+          await FlutterQuickVideoEncoder.appendVideoFrame(bytes);
+
+          if (audio != null) {
+            final startSample = i * audio.samplesPerFrame;
+            final frameBytes = audio.samples.buffer.asUint8List(startSample * 2, audio.samplesPerFrame * 2);
+            await FlutterQuickVideoEncoder.appendAudioFrame(frameBytes);
+          }
+
+          onProgress?.call((i + 1) / totalExportFrames);
         }
-
-        final bytes = await _renderFrameRgba(
-          contents: contents,
-          imageCache: imageCache,
-          exportWidth: width,
-          exportHeight: height,
-          sourceWidth: sourceWidth,
-          sourceHeight: sourceHeight,
-          camera: camera,
-        );
-        await FlutterQuickVideoEncoder.appendVideoFrame(bytes);
-
-        if (audio != null) {
-          final startSample = i * audio.samplesPerFrame;
-          final frameBytes = audio.samples.buffer.asUint8List(startSample * 2, audio.samplesPerFrame * 2);
-          await FlutterQuickVideoEncoder.appendAudioFrame(frameBytes);
-        }
-
-        onProgress?.call((i + 1) / totalExportFrames);
+      } finally {
+        await FlutterQuickVideoEncoder.finish();
       }
-    } finally {
-      await FlutterQuickVideoEncoder.finish();
+    } on ExportCancelledException {
+      final partialFile = File(outputPath);
+      if (await partialFile.exists()) await partialFile.delete();
+      rethrow;
     }
 
     return ExportResult(path: outputPath, audioIncluded: audio != null);

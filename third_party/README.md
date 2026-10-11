@@ -19,6 +19,16 @@ the local copy's `android/build.gradle` instead.
 If a future pub.dev release of `flutter_quick_video_encoder` fixes this,
 switch back to a normal version dependency and delete this folder.
 
+Also patched `feedAudioEncoder()` in `FlutterQuickVideoEncoderPlugin.java`
+to drain the audio encoder's output after every internal input-buffer push,
+not just once after the whole chunk is submitted. One `appendAudioFrame`
+call (one video frame's worth of PCM) is often bigger than the codec's own
+input buffer and needs several pushes; without draining between them, the
+encoder's output buffers fill up, it stops recycling input buffers, and
+`dequeueInputBuffer` blocks forever - freezing the single processing thread,
+then the platform channel, then the whole app (observed as an ANR/ "Lost
+connection to device" partway through export once audio muxing was added).
+
 ## video_thumbnail
 
 Forked from v0.5.6 (the latest available). Same `compileSdkVersion 33`
