@@ -75,6 +75,13 @@ class Shot {
 
   AudioClip? audioClip;
 
+  /// Sync-point markers the user places against the audio, in seconds
+  /// relative to frame 0 of this shot's own timeline (not the source audio
+  /// file) - so they stay meaningful even if the audio's trim changes
+  /// later. Shown as ticks under the timeline/waveform so drawn frames can
+  /// be lined up with a word or beat instead of guessing from playback.
+  List<double> audioKeyframes;
+
   /// The pixel size the drawing canvas was actually rendered at when this
   /// shot's strokes were recorded (strokes are stored in raw screen
   /// coordinates, not normalized 0-1 fractions). Export needs this to scale
@@ -98,6 +105,7 @@ class Shot {
     CameraState? cameraStart,
     CameraState? cameraEnd,
     this.audioClip,
+    List<double>? audioKeyframes,
     this.canvasWidthPx,
     this.canvasHeightPx,
     ExportChecklist? exportChecklist,
@@ -105,6 +113,7 @@ class Shot {
         storyboardFrame = storyboardFrame ?? AnimFrame(id: '$id-storyboard'),
         cameraStart = cameraStart ?? CameraState(),
         cameraEnd = cameraEnd ?? CameraState(),
+        audioKeyframes = audioKeyframes ?? [],
         exportChecklist = exportChecklist ?? ExportChecklist();
 
   /// The shot's overall timeline length - every layer is kept this long.
@@ -125,6 +134,18 @@ class Shot {
   }
 
   bool get hasAnyStrokes => layers.any((l) => l.frames.any((f) => f.strokes.isNotEmpty));
+
+  /// [audioKeyframes] mapped onto this shot's current frame grid, for
+  /// drawing tick marks under the timeline - recomputed from the stored
+  /// seconds every time, so inserting/deleting frames earlier in the shot
+  /// naturally shifts which frame number a keyframe lands on while the
+  /// audio moment it marks stays fixed.
+  Set<int> get audioKeyframeFrames {
+    if (fps <= 0) return {};
+    final maxIndex = frameCount - 1;
+    if (maxIndex < 0) return {};
+    return {for (final t in audioKeyframes) (t * fps).round().clamp(0, maxIndex)};
+  }
 
   /// Every visible layer's content at [index] (reference layers included) -
   /// used by the live editor, onion skin and thumbnails, where seeing a
@@ -175,6 +196,7 @@ class Shot {
         'cameraStart': cameraStart.toJson(),
         'cameraEnd': cameraEnd.toJson(),
         'audioClip': audioClip?.toJson(),
+        'audioKeyframes': audioKeyframes,
         'canvasWidthPx': canvasWidthPx,
         'canvasHeightPx': canvasHeightPx,
         'exportChecklist': exportChecklist.toJson(),
@@ -207,6 +229,8 @@ class Shot {
         audioClip: json['audioClip'] != null
             ? AudioClip.fromJson(json['audioClip'] as Map<String, dynamic>)
             : null,
+        audioKeyframes:
+            (json['audioKeyframes'] as List?)?.map((t) => (t as num).toDouble()).toList() ?? [],
         canvasWidthPx: (json['canvasWidthPx'] as num?)?.toDouble(),
         canvasHeightPx: (json['canvasHeightPx'] as num?)?.toDouble(),
         exportChecklist: json['exportChecklist'] != null

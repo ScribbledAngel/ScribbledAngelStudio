@@ -13,6 +13,19 @@ class TimelineStrip extends StatelessWidget {
   final ValueChanged<int> onDuplicate;
   final ValueChanged<int> onDelete;
 
+  /// One peak (0.0-1.0) per frame, aligned 1:1 with the frame thumbnails -
+  /// null when the shot has no audio (or it's still loading), in which case
+  /// no waveform/keyframe row is shown at all.
+  final List<double>? waveformPeaks;
+
+  /// Frame indices with a sync-point marker set (see [onToggleKeyframe]).
+  final Set<int> keyframeFrames;
+
+  /// Called when the user taps a frame's waveform bar to add/remove a
+  /// sync-point marker there - a separate tap target from [onSelect], so
+  /// marking time doesn't also jump the current frame.
+  final ValueChanged<int>? onToggleKeyframe;
+
   const TimelineStrip({
     super.key,
     required this.frameCount,
@@ -22,6 +35,9 @@ class TimelineStrip extends StatelessWidget {
     required this.onAddFrame,
     required this.onDuplicate,
     required this.onDelete,
+    this.waveformPeaks,
+    this.keyframeFrames = const {},
+    this.onToggleKeyframe,
   });
 
   void _showFrameOptions(BuildContext context, int index) {
@@ -67,8 +83,9 @@ class TimelineStrip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final showWaveform = waveformPeaks != null;
     return Container(
-      height: 124,
+      height: showWaveform ? 148 : 124,
       color: AppColors.surface,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
@@ -108,10 +125,60 @@ class TimelineStrip extends StatelessWidget {
                     fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
                   ),
                 ),
+                if (showWaveform) ...[
+                  const SizedBox(height: 4),
+                  _WaveformKeyframeCell(
+                    peak: index < waveformPeaks!.length ? waveformPeaks![index] : 0,
+                    isKeyframe: keyframeFrames.contains(index),
+                    onTap: onToggleKeyframe == null ? null : () => onToggleKeyframe!(index),
+                  ),
+                ],
               ],
             ),
           );
         },
+      ),
+    );
+  }
+}
+
+/// One frame's audio-peak bar, doubling as a tappable sync-point marker.
+/// A separate, smaller tap target nested inside the frame cell's own
+/// GestureDetector - Flutter resolves a direct tap to the innermost
+/// recognizer, so this doesn't also select the frame.
+class _WaveformKeyframeCell extends StatelessWidget {
+  final double peak;
+  final bool isKeyframe;
+  final VoidCallback? onTap;
+
+  const _WaveformKeyframeCell({required this.peak, required this.isKeyframe, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    const maxBarHeight = 16.0;
+    final barHeight = (2 + peak.clamp(0.0, 1.0) * (maxBarHeight - 2)).toDouble();
+    final color = isKeyframe ? AppColors.accent : AppColors.textSecondary.withValues(alpha: 0.6);
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: SizedBox(
+        width: 48,
+        height: maxBarHeight + 6,
+        child: Stack(
+          alignment: Alignment.bottomCenter,
+          children: [
+            Container(
+              width: 5,
+              height: barHeight,
+              decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(2)),
+            ),
+            if (isKeyframe)
+              const Positioned(
+                top: 0,
+                child: Icon(Icons.diamond, size: 9, color: AppColors.accent),
+              ),
+          ],
+        ),
       ),
     );
   }

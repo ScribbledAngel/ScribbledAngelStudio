@@ -76,6 +76,9 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
   final AudioPlayer _audioPlayer = AudioPlayer();
   bool _isRecording = false;
 
+  List<double>? _audioWaveformPeaks;
+  String? _waveformKey;
+
   AppState get _appState => context.read<AppState>();
 
   Shot? get _shot => context.read<AppState>().getShot(
@@ -123,6 +126,41 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
       if (l.id == _activeLayerId) return l;
     }
     return null;
+  }
+
+  /// Recomputes the under-timeline waveform (one peak per frame) whenever
+  /// the audio clip, its trim, or the frame grid actually changes - cheap
+  /// to call every build since it no-ops unless the key changed.
+  void _maybeRefreshWaveform(Shot shot) {
+    final clip = shot.audioClip;
+    final key = clip == null
+        ? null
+        : '${clip.fileName}|${clip.trimStart}|${shot.frameCount}|${shot.fps}';
+    if (key == _waveformKey) return;
+    _waveformKey = key;
+
+    if (clip == null || shot.frameCount == 0 || shot.fps <= 0) {
+      if (_audioWaveformPeaks != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) setState(() => _audioWaveformPeaks = null);
+        });
+      }
+      return;
+    }
+
+    final endSeconds =
+        (clip.trimStart + shot.frameCount / shot.fps).clamp(0.0, clip.sourceDurationSeconds);
+    _audioService
+        .extractWaveformPeaks(
+      fileName: clip.fileName,
+      startSeconds: clip.trimStart,
+      endSeconds: endSeconds,
+      sampleCount: shot.frameCount,
+    )
+        .then((peaks) {
+      if (!mounted || key != _waveformKey) return; // superseded by a newer change
+      setState(() => _audioWaveformPeaks = peaks);
+    });
   }
 
   DateTime? _playbackStartTime;
@@ -1036,6 +1074,7 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
 
     _ensureActiveLayer(shot);
     final activeLayer = _activeLayer(shot);
+    _maybeRefreshWaveform(shot);
 
     final maxIndex = shot.frameCount == 0 ? 0 : shot.frameCount - 1;
     final frameIndex = _currentFrameIndex < 0
@@ -1249,6 +1288,14 @@ class _ShotEditorScreenState extends State<ShotEditorScreen> {
               onAddFrame: _addFrame,
               onDuplicate: _duplicateFrame,
               onDelete: _deleteFrame,
+              waveformPeaks: _audioWaveformPeaks,
+              keyframeFrames: shot.audioKeyframeFrames,
+              onToggleKeyframe: (index) => _appState.toggleAudioKeyframeAtFrame(
+                widget.projectId,
+                widget.episodeId,
+                widget.shotId,
+                index,
+              ),
             ),
           ],
         ),

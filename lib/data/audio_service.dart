@@ -138,6 +138,32 @@ class AudioService {
     }
   }
 
+  /// Decodes [startSeconds]..[endSeconds] of an audio clip's file into
+  /// [sampleCount] peak amplitudes (0.0-1.0, loudest moment in range = 1.0),
+  /// for drawing a waveform - e.g. one bucket per animation frame, so it
+  /// lines up with the frame timeline. Returns null if there's no audio
+  /// track or decoding fails.
+  Future<List<double>?> extractWaveformPeaks({
+    required String fileName,
+    required double startSeconds,
+    required double endSeconds,
+    required int sampleCount,
+  }) async {
+    if (sampleCount <= 0) return null;
+    final sourcePath = await fullPathFor(fileName);
+    try {
+      final peaks = await _pcmChannel.invokeMethod<List<dynamic>>('extractWaveformPeaks', {
+        'sourcePath': sourcePath,
+        'startMs': (startSeconds * 1000).round(),
+        'endMs': (endSeconds * 1000).round(),
+        'sampleCount': sampleCount,
+      });
+      return peaks?.map((p) => (p as num).toDouble()).toList();
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> deleteFile(String fileName) async {
     final path = await fullPathFor(fileName);
     final file = File(path);

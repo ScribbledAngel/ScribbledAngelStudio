@@ -73,3 +73,19 @@ this feature.
       still succeeds, video-only, with no crash. Same for a shot with no
       audio clip set at all (plain "no audio set on this shot" note, no
       warning tone).
+- [ ] **13. Waveform under the animation timeline.**
+      Set a shot's audio (any source), open the Animation Editor. A small
+      peak bar appears under every frame thumbnail, one per frame, scrolling
+      in lockstep with the frame strip (no separate scrollbar to line up).
+      Trim the audio or add/remove frames - the bars refresh to match.
+      A shot with no audio shows the timeline exactly as before (no gap,
+      no loading flicker).
+- [ ] **13b. Keyframe sync markers.**
+      Tap a frame's waveform bar - a diamond marker appears on it and
+      persists after navigating away and back and after a full app
+      restart. Tap it again - it's removed. Tapping the bar never changes
+      which frame is selected for drawing (that still only happens by
+      tapping the thumbnail itself). Insert a new frame earlier in the
+      shot - existing markers shift to the frame that now holds the same
+      audio moment (they track the audio's time, not a fixed frame
+      number).

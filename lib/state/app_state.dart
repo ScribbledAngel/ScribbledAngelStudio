@@ -551,4 +551,27 @@ class AppState extends ChangeNotifier {
     shot.audioClip = null;
     await _commit();
   }
+
+  /// Adds or removes a sync-point marker at [frameIndex]'s position on the
+  /// shot's timeline (stored as seconds from frame 0, not a raw frame
+  /// index - see [Shot.audioKeyframes]).
+  Future<void> toggleAudioKeyframeAtFrame(
+    String projectId,
+    String episodeId,
+    String shotId,
+    int frameIndex,
+  ) async {
+    final shot = getShot(projectId, episodeId, shotId);
+    if (shot == null || shot.fps <= 0) return;
+    final time = frameIndex / shot.fps;
+    final halfFrameSeconds = 0.5 / shot.fps;
+    final existingIndex = shot.audioKeyframes.indexWhere((t) => (t - time).abs() < halfFrameSeconds);
+    if (existingIndex >= 0) {
+      shot.audioKeyframes.removeAt(existingIndex);
+    } else {
+      shot.audioKeyframes.add(time);
+      shot.audioKeyframes.sort();
+    }
+    await _commit();
+  }
 }
